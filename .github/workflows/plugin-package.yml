@@ -1,0 +1,50 @@
+name: Plugin package
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install development dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Confirm generated plugin output
+        run: npm run check:build
+
+      - name: Assemble test ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p dist/immersive-translate-extended
+          cp LICENSE THIRD_PARTY_NOTICES.md \
+            plugin/dashboard-preload.js plugin/document-preload.js plugin/document-runtime.js \
+            plugin/main.js plugin/manifest.json plugin/styles.css \
+            dist/immersive-translate-extended/
+          (cd dist && zip -X -q "immersive-translate-extended-test-${GITHUB_SHA}.zip" immersive-translate-extended/*)
+
+      - name: Upload test ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: immersive-translate-extended-test
+          path: dist/immersive-translate-extended-test-*.zip
+          if-no-files-found: error
