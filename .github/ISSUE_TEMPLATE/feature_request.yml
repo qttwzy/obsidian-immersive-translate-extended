@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a focused improvement to the plugin
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem and desired outcome. Do not include account details, provider credentials, or private note content.
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What workflow is difficult today, and who encounters it?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior rather than a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Examples or evidence
+      description: Include sanitized examples, accessibility needs, or compatibility constraints.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: I reviewed README.md and SUPPORT.md for the current public-beta boundary.
+          required: true
+        - label: I removed private content and secrets from this request.
+          required: true

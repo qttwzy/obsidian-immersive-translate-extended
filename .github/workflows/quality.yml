@@ -1,0 +1,35 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install development dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Check syntax and generated output
+        run: npm run quality
+
+      - name: Verify production dependency metadata
+        run: npm sbom --omit=dev --package-lock-only --sbom-format spdx --sbom-type application > /tmp/imt-sbom.spdx.json
+
+      - name: Confirm generated files are committed
+        run: git diff --exit-code -- plugin/main.js

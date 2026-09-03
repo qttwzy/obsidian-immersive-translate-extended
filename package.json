@@ -1,0 +1,25 @@
+{
+  "name": "obsidian-immersive-translate-extended",
+  "version": "4.0.0",
+  "private": true,
+  "description": "Immersive Translate Extended Obsidian plugin",
+  "main": "plugin/main.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "node scripts/build-plugin.js",
+    "check:build": "node scripts/build-plugin.js --check",
+    "check:syntax": "node scripts/check-syntax.js",
+    "test": "npm run check:build && node --test \"tests/*.test.js\"",
+    "quality": "npm run check:syntax && npm test",
+    "release:build": "node scripts/release-plugin.js"
+  },
+  "keywords": [],
+  "author": "IMT-Extended",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "playwright": "^1.59.1"
+  }
+}

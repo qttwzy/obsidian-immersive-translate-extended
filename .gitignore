@@ -1,0 +1,24 @@
+node_modules/
+*.bak
+__pycache__/
+.DS_Store
+Thumbs.db
+.codegraph/
+.handoff/
+
+# 开发产物(不纳入版本控制)
+capture_output/
+releases/
+debug.log
+dashboard_screenshot.png
+test_complete.html
+test_p0.html
+plugin/userscript.cache.js
+plugin/userscript.runtime.js
+plugin/userscript.runtime.js.installing-*
+plugin/userscript.runtime.js.backup-*
+
+# 用户安装的翻译运行时仅保存在本地插件目录
+# 第三方运行时与其中的公共密钥不进入 Git 历史
+src/immersive-translate.user.js
+.zcode/
