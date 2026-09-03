@@ -20,6 +20,6 @@
   "license": "MIT",
   "type": "commonjs",
   "devDependencies": {
-    "playwright": "^1.59.1"
+    "playwright": "^1.62.1"
   }
 }
