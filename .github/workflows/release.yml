@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version from package.json to publish as a prerelease
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'qttwzy/obsidian-immersive-translate-extended' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install development dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Confirm version
+        run: test "$(node -p "require('./package.json').version")" = "${{ inputs.version }}"
+
+      - name: Run product checks
+        run: npm run quality
+
+      - name: Build release ZIP
+        run: npm run package:build -- --root "$PWD" --out "$RUNNER_TEMP/plugin-package"
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ inputs.version }}" "$RUNNER_TEMP/plugin-package/immersive-translate-extended-${{ inputs.version }}.zip" --target "$GITHUB_SHA" --prerelease --title "Immersive Translate Extended ${{ inputs.version }}" --notes "Download the complete plugin ZIP below and follow the installation steps in README.md."

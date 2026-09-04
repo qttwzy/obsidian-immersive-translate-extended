@@ -1,0 +1,1430 @@
+(function () {
+  "use strict";
+
+  function installDashboardPageBridge() {
+  "use strict";
+  var ALLOWED_HOSTS = {
+    "dash.immersivetranslate.com": true,
+    "app.immersivetranslate.com": true,
+    "immersivetranslate.com": true,
+    "onboarding.immersivetranslate.com": true,
+    "immersive-translate.owenyoung.com": true,
+  };
+  try {
+    if (location.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(ALLOWED_HOSTS, location.hostname.toLowerCase())) {
+      console.warn("[IMT-Preload] Refusing to run on an untrusted origin");
+      return;
+    }
+  } catch (e) { return; }
+  var P = "imt-gm-";
+  var BRIDGE_META_NAME = "immersive-translate-meta";
+  var BRIDGE_VERSION = "4.0.1";
+  var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
+  var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
+  // A logout can race an in-flight Dashboard request; invalidate captures when identity data is removed.
+  var _captureGeneration = 0;
+  var _configGeneration = 0;
+  var J = "immersive-translate";
+  var SYNC_MAX_KEYS = 512;
+  var SYNC_MAX_VALUE_BYTES = 512 * 1024;
+  var SYNC_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+  var CONFIG_MAX_NODES = 16 * 1024;
+  var CONFIG_MAX_ARRAY_ITEMS = 4 * 1024;
+  var SYNC_SCOPE_DASHBOARD = "dashboard-account-services";
+  var SYNC_TOP_KEYS = { fullLocalUserConfig: true, userInfo: true, user_info: true, subscriptionInfo: true, memberConfig: true };
+  var SERVICE_AVAILABILITY_FIELDS = { visible: true, enabled: true, enable: true, available: true, isAvailable: true, configured: true, isConfigured: true, hidden: true, disabled: true };
+  var USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
+  var PKCE_LEGACY_SESSION_KEY = "__imt_pkce_session";
+  var _coreBrowserAPI = null;
+  var _storageChangeListeners = [];
+
+  function _safeAppend(el) {
+    try {
+      var parent = document.body || document.documentElement;
+      if (parent && el) parent.appendChild(el);
+    } catch (e) {}
+  }
+
+  function _ensureBridgeMetadata() {
+    try {
+      var parent = document.head || document.documentElement;
+      if (!parent) return;
+      var selector = "meta[name=\"" + BRIDGE_META_NAME + "\"]";
+      var existing = typeof document.querySelector === "function" ? document.querySelector(selector) : null;
+      if (existing) return;
+      var meta = document.createElement("meta");
+      var content = JSON.stringify({ version: BRIDGE_VERSION, _imtBridgeVersion: BRIDGE_VERSION });
+      meta.name = BRIDGE_META_NAME;
+      meta.content = typeof btoa === "function" ? btoa(content) : content;
+      if (typeof meta.setAttribute === "function") {
+        meta.setAttribute("name", BRIDGE_META_NAME);
+        meta.setAttribute("content", meta.content);
+      }
+      parent.appendChild(meta);
+    } catch (e) {}
+  }
+
+  function _ensureEl(id, val) {
+    try {
+      var el = document.getElementById(id);
+      if (el) return el;
+      el = document.createElement("input");
+      el.type = "hidden";
+      el.id = id;
+      el.style.display = "none";
+      if (val !== undefined) el.value = typeof val === "string" ? val : JSON.stringify(val);
+      _safeAppend(el);
+      return el;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function _ensureAllHiddenInputs() {
+    var _lc = {};
+    try {
+      for (var _i = 0; _i < localStorage.length; _i++) {
+        var _k = localStorage.key(_i);
+        if (_k && _k.indexOf(P) === 0) {
+          try { _lc[_k.slice(P.length)] = JSON.parse(localStorage.getItem(_k)); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    _ensureEl(J + "-status", "active");
+    _ensureEl(J + "-local-storage", JSON.stringify(_lc));
+    _ensureEl(J + "-sync-storage", JSON.stringify(_lc));
+    _ensureEl(J + "-manifest", JSON.stringify({
+      manifest_version: 3,
+      name: "Immersive Translate",
+      version: BRIDGE_VERSION,
+      _imtBridgeVersion: BRIDGE_VERSION,
+      _isUserscript: true,
+    }));
+    _ensureEl(J + "-page-ready", "false");
+  }
+
+  function _setPageReady() {
+    try {
+      var el = document.getElementById(J + "-page-ready");
+      if (el) {
+        el.value = "true";
+        el.dispatchEvent(new Event("change"));
+      }
+    } catch (e) {}
+  }
+
+  function gmv(k, d) {
+    try {
+      var s = localStorage.getItem(P + k);
+      return s !== null ? JSON.parse(s) : d;
+    } catch (e) {
+      return d;
+    }
+  }
+
+  function smv(k, v) {
+    if (k === "fullLocalUserConfig") return _setAndCommitFullLocalUserConfig(v);
+    try {
+      var oldValue = gmv(k, undefined);
+      localStorage.setItem(P + k, JSON.stringify(v));
+      _emitStorageChange(k, oldValue, v);
+    } catch (e) {}
+  }
+
+  function dmv(k) {
+    try {
+      var oldValue = gmv(k, undefined);
+      localStorage.removeItem(P + k);
+      _emitStorageChange(k, oldValue, undefined);
+    } catch (e) {}
+  }
+
+  function _hasStoredAuthToken() {
+    var token = gmv("authToken", "");
+    return typeof token === "string" && token.length > 0;
+  }
+
+  function _backfillUserInfoFromPageStore() {
+    if (!_hasStoredAuthToken()) return;
+    try {
+      var raw = localStorage.getItem("user_info");
+      if (typeof raw !== "string" || !raw) return;
+      var userInfo = _sanitizeSyncUserInfo(JSON.parse(raw), true);
+      if (userInfo) smv("userInfo", userInfo);
+    } catch (e) {}
+  }
+
+  function _emitStorageChange(key, oldValue, newValue) {
+    var same = false;
+    try { same = JSON.stringify(oldValue) === JSON.stringify(newValue); } catch (e) { same = oldValue === newValue; }
+    if (same) return false;
+    var changes = {}; changes[key] = { oldValue: oldValue, newValue: newValue };
+    var listeners = _storageChangeListeners.slice();
+    for (var i = 0; i < listeners.length; i++) {
+      try { listeners[i](changes, "local"); } catch (e) {}
+    }
+    try {
+      if (typeof StorageEvent === "function" && typeof window.dispatchEvent === "function") {
+        window.dispatchEvent(new StorageEvent("storage", { key: P + key, oldValue: oldValue === undefined ? null : JSON.stringify(oldValue), newValue: newValue === undefined ? null : JSON.stringify(newValue), url: location.href }));
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  function lv() {
+    var ks = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.startsWith(P)) ks.push(k.slice(P.length));
+      }
+    } catch (e) {}
+    return ks;
+  }
+
+  function getAllConfig() {
+    var result = {};
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.startsWith(P)) {
+          try {
+            result[k.slice(P.length)] = JSON.parse(localStorage.getItem(k));
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    return result;
+  }
+
+  function _initPkceHostBridge() {
+    try {
+      return !!(window.__imtDashboardHost && typeof window.__imtDashboardHost.request === "function");
+    } catch (e) { return false; }
+  }
+
+  function _invokePkceHost(type, data) {
+    var hostBridge;
+    try { hostBridge = window.__imtDashboardHost; } catch (e) { hostBridge = null; }
+    if (!hostBridge || typeof hostBridge.request !== "function") {
+      return Promise.resolve({ ok: false, code: "pkce_host_unavailable", message: "PKCE host is unavailable", retryable: true });
+    }
+    try {
+      return Promise.resolve(hostBridge.request(type, data || {})).catch(function () {
+        return { ok: false, code: "pkce_host_unavailable", message: "PKCE host is unavailable", retryable: true };
+      });
+    } catch (e) {
+      return Promise.resolve({ ok: false, code: "pkce_host_unavailable", message: "PKCE host is unavailable", retryable: true });
+    }
+  }
+
+  function _clearPkceSession() {
+    _invokePkceHost("clearPkceSession", {});
+  }
+
+  function _getOrCreatePkceChallenge() {
+    return _invokePkceHost("getOrCreatePkceChallengeAsync", {});
+  }
+
+  function _storePkceLogin(authState) {
+    var token = authState && authState.token;
+    if (typeof token !== "string" || !token) throw new Error("PKCE token missing");
+    smv("authToken", token);
+    // Current Dashboard builds read user_token/user_info through browser.storage.
+    smv("user_token", token);
+    var safeUser = _sanitizeSyncUserInfo(authState.userInfo, true);
+    if (safeUser) smv("userInfo", safeUser);
+    else try { localStorage.removeItem("user_info"); } catch (e) {}
+    // Keep the Dashboard's own aliases working; the local-storage bridge mirrors them to the safe store.
+    try { localStorage.setItem("immersiveTranslateIMT_COMMON_JWT_TOKEN", token); } catch (e) {}
+    if (safeUser) try { localStorage.setItem("user_info", JSON.stringify(safeUser)); } catch (e) {}
+  }
+
+  function _hydratePersistedAuthState() {
+    var initialGeneration = _captureGeneration;
+    var initialToken = gmv("authToken", "");
+    if (typeof initialToken !== "string") initialToken = "";
+    var initialDashboardToken = gmv("user_token", "");
+    if (typeof initialDashboardToken !== "string") initialDashboardToken = "";
+    var initialDashboardUser = JSON.stringify(_sanitizeSyncUserInfo(gmv("user_info", null), true) || null);
+    _invokePkceHost("getPersistedAuthState", {}).then(function (result) {
+      if (!result || !result.ok || !result.authState) return;
+      var token = result.authState.token;
+      if (typeof token !== "string" || !token) return;
+      var currentToken = gmv("authToken", "");
+      if (typeof currentToken !== "string") currentToken = "";
+      var currentDashboardToken = gmv("user_token", "");
+      if (typeof currentDashboardToken !== "string") currentDashboardToken = "";
+      var currentDashboardUser = JSON.stringify(_sanitizeSyncUserInfo(gmv("user_info", null), true) || null);
+      // A page-side login/logout that completed while IPC was in flight owns the newer state.
+      if (_captureGeneration !== initialGeneration || currentToken !== initialToken
+          || currentDashboardToken !== initialDashboardToken || currentDashboardUser !== initialDashboardUser) return;
+      var hostUser = JSON.stringify(_sanitizeSyncUserInfo(result.authState.userInfo, true) || null);
+      if (currentToken === token && currentDashboardToken === token && currentDashboardUser === hostUser) return;
+      _storePkceLogin(result.authState);
+      setTimeout(function () {
+        try { location.reload(); } catch (e) {}
+      }, 0);
+    }).catch(function () {});
+  }
+
+  async function _exchangePkceToken(data) {
+    var result = await _invokePkceHost("submitPkceAuthCodeAsync", data || {});
+    if (result && result.ok && result.authState) {
+      _storePkceLogin(result.authState);
+      return { ok: true };
+    }
+    return result;
+  }
+
+  function _openInTab(value) {
+    try {
+      var url = new URL(String(value), location.href);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+      return typeof window.open === "function" ? window.open(url.href, "_blank") : null;
+    } catch (e) { return null; }
+  }
+
+  function _installAuthenticatedAccountCloseGuard() {
+    var originalClose = typeof window.close === "function" ? window.close : null;
+    if (!originalClose) return;
+    window.close = function () {
+      try {
+        var currentUrl = new URL(String(location.href));
+        var token = gmv("authToken", "");
+        if (currentUrl.hostname.toLowerCase() === "immersivetranslate.com"
+            && currentUrl.pathname.indexOf("/accounts/") === 0
+            && typeof token === "string" && token) {
+          var fallback = "https://dash.immersivetranslate.com/#general";
+          var target;
+          try { target = new URL(currentUrl.searchParams.get("return_url") || fallback); }
+          catch (e) { target = new URL(fallback); }
+          var targetHost = target.hostname.toLowerCase();
+          if (target.protocol !== "https:" || (targetHost !== "dash.immersivetranslate.com" && targetHost !== "app.immersivetranslate.com")) {
+            target = new URL(fallback);
+          }
+          // Ask the host to reuse the owned BrowserWindow. Cross-origin
+          // location replacement can be swallowed by the Accounts page, while
+          // opening a second window can escape to the system browser.
+          _invokePkceHost("navigateTrustedDashboard", { url: target.href }).catch(function () {});
+          return null;
+        }
+      } catch (e) {}
+      return originalClose.apply(window, arguments);
+    };
+  }
+
+  function _isSensitiveSyncKey(key) {
+    var normalized = String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
+    var mouseHoverControlKey = /^mouse_hover(?:_[a-z0-9]+)*_key$/.test(normalized)
+      && !/(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key/.test(normalized);
+    if (mouseHoverControlKey) return false;
+    return /(?:^|_)(?:auth|bearer|oauth|session)(?:_|$)/.test(normalized) || /(?:token|secret|password|passwd|authorization|cookie|jwt|credential|(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key|(?:^|[_-])key$|refresh[_-]?token)/.test(normalized);
+  }
+
+  function _isUnsafeSyncProperty(key) {
+    return key === "__proto__" || key === "constructor" || key === "prototype";
+  }
+
+  function _isAllowedSyncTopKey(key) {
+    return Object.prototype.hasOwnProperty.call(SYNC_TOP_KEYS, key);
+  }
+
+  function _copySafeUserInfoFields(source) {
+    var result = {};
+    Object.keys(USER_INFO_FIELD_LIMITS).forEach(function (key) {
+      var value = source[key]; var limit = USER_INFO_FIELD_LIMITS[key];
+      if ((key === "id" || key === "userId") && typeof value === "number" && isFinite(value)) result[key] = value;
+      else if (typeof value === "string" && value.length <= limit) result[key] = value;
+    });
+    return result;
+  }
+
+  function _sanitizeSyncUserInfo(value, allowIdOnly) {
+    if (!value || typeof value !== "object") return null;
+    var candidates = [value];
+    if (value.data && typeof value.data === "object") candidates.push(value.data);
+    if (value.result && typeof value.result === "object") candidates.push(value.result);
+    for (var i = 0; i < candidates.length; i++) {
+      var result = _copySafeUserInfoFields(candidates[i]);
+      if (result.email || result.userId || result.nickname || (allowIdOnly && result.id !== undefined)) return result;
+    }
+    return null;
+  }
+
+  function _redactSyncValue(value, depth, budget) {
+    if (budget) {
+      if (budget.remaining <= 0) { budget.exceeded = true; return null; }
+      budget.remaining--;
+    }
+    if (depth > 8) return null;
+    if (value === null || value === undefined || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      if (budget && value.length > CONFIG_MAX_ARRAY_ITEMS) { budget.exceeded = true; return null; }
+      var items = [];
+      for (var itemIndex = 0; itemIndex < value.length; itemIndex++) {
+        items.push(_redactSyncValue(value[itemIndex], depth + 1, budget));
+        if (budget && budget.exceeded) break;
+      }
+      return items;
+    }
+    var result = {};
+    for (var key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key) || _isUnsafeSyncProperty(key) || _isSensitiveSyncKey(key)) continue;
+      result[key] = _redactSyncValue(value[key], depth + 1, budget);
+      if (budget && budget.exceeded) break;
+    }
+    return result;
+  }
+
+  function _sanitizeFullLocalUserConfig(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    var budget = { remaining: CONFIG_MAX_NODES, exceeded: false };
+    var safeConfig = _redactSyncValue(value, 0, budget);
+    if (budget.exceeded) return null;
+    var serialized;
+    try { serialized = JSON.stringify(safeConfig); } catch (e) { return null; }
+    if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
+    return safeConfig;
+  }
+
+  function _getFullLocalUserConfig() {
+    return _sanitizeFullLocalUserConfig(gmv("fullLocalUserConfig", {})) || {};
+  }
+
+  function _invalidatePendingSyncSnapshot() {
+    window.__imt_sync_pending_snapshot = null;
+    window.__imt_sync_ack_hash = null;
+    window.__imt_sync_data = null;
+  }
+
+  function _storeFullLocalUserConfig(safeConfig) {
+    var oldValue = _getFullLocalUserConfig();
+    if (!_safeStore("fullLocalUserConfig", safeConfig, SYNC_MAX_VALUE_BYTES)) return false;
+    _configGeneration++;
+    _invalidatePendingSyncSnapshot();
+    _emitStorageChange("fullLocalUserConfig", oldValue, safeConfig);
+    return true;
+  }
+
+  function _setAndCommitFullLocalUserConfig(value) {
+    var safeConfig = _sanitizeFullLocalUserConfig(value);
+    if (!safeConfig || !_storeFullLocalUserConfig(safeConfig)) {
+      return Promise.resolve({ success: false, error: "invalid_config" });
+    }
+    return _invokePkceHost("commitDashboardConfig", { config: safeConfig }).then(function (result) {
+      if (result && (result.ok === true || result.success === true)) return { success: true };
+      return { success: false, error: result && result.code || "config_commit_failed" };
+    }, function () {
+      return { success: false, error: "config_commit_failed" };
+    });
+  }
+
+  function _canonicalSyncSuffix(suffix) {
+    if (suffix === "user_info") return "userInfo";
+    if (suffix === "memberConfig") return "fullLocalUserConfig";
+    if (suffix === "serviceConfig" || suffix === "translatorConfig") return "translateServiceConfig";
+    return suffix;
+  }
+
+  function _normalizeSyncKey(key) {
+    if (typeof key !== "string" || key.length > 256) return null;
+    if (key.indexOf(P) === 0) {
+      var suffix = _canonicalSyncSuffix(key.slice(P.length));
+      if (!suffix || suffix.indexOf("__") === 0 || _isSensitiveSyncKey(suffix) || !_isAllowedSyncTopKey(suffix)) return null;
+      return P + suffix;
+    }
+    if (!_isAllowedSyncTopKey(key) || _isSensitiveSyncKey(key)) return null;
+    return P + _canonicalSyncSuffix(key);
+  }
+
+  function _serializeSafeSyncValue(key, rawValue) {
+    var value = rawValue;
+    if (typeof value === "string") {
+      try { value = JSON.parse(value); } catch (e) {}
+    }
+    if (key === P + "userInfo") {
+      if (!_hasStoredAuthToken()) return null;
+      value = _sanitizeSyncUserInfo(value, true);
+      if (!value) return null;
+    } else if (key === P + "subscriptionInfo") {
+      if (!_hasStoredAuthToken()) return null;
+      value = _redactSyncValue(value, 0);
+    } else if (key === P + "fullLocalUserConfig") {
+      value = _sanitizeFullLocalUserConfig(value);
+      if (!value) return null;
+    } else {
+      value = _redactSyncValue(value, 0);
+    }
+    var serialized;
+    try { serialized = JSON.stringify(value); } catch (e) { return null; }
+    if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
+    return serialized;
+  }
+
+  function _orderedSyncValues(values) {
+    var ordered = {};
+    Object.keys(values || {}).sort().forEach(function (key) { ordered[key] = values[key]; });
+    return ordered;
+  }
+
+  function _hashSyncPayload(values, deletedKeys) {
+    var input = JSON.stringify({ values: _orderedSyncValues(values), deletedKeys: (deletedKeys || []).slice().sort() });
+    var hash = 2166136261;
+    for (var i = 0; i < input.length; i++) { hash ^= input.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  // Keep sync/export data bounded and credential-free; the shadow lets deletions drain across multiple snapshots.
+  function _buildSyncSnapshot() {
+    var pending = window.__imt_sync_pending_snapshot;
+    if (pending && window.__imt_sync_ack_hash === pending.snapshot.hash) {
+      window.__imt_sync_shadow = pending.shadow;
+      window.__imt_sync_pending_snapshot = null;
+      window.__imt_sync_ack_hash = null;
+      pending = null;
+    }
+    if (pending && pending.snapshot) return pending.snapshot;
+
+    var candidates = []; var observed = {}; var readComplete = true; var skipped = 0;
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var sourceKey = localStorage.key(i);
+        var normalizedKey = _normalizeSyncKey(sourceKey);
+        if (!normalizedKey) continue;
+        observed[normalizedKey] = true;
+        var serialized = _serializeSafeSyncValue(normalizedKey, localStorage.getItem(sourceKey));
+        if (serialized === null) { skipped++; continue; }
+        candidates.push({ normalizedKey: normalizedKey, sourceKey: String(sourceKey), serialized: serialized, priority: String(sourceKey) === normalizedKey ? 0 : 1 });
+      }
+    } catch (e) { readComplete = false; }
+    if (!readComplete) return null;
+
+    candidates.sort(function (a, b) {
+      return a.normalizedKey < b.normalizedKey ? -1 : a.normalizedKey > b.normalizedKey ? 1 : a.priority - b.priority || (a.sourceKey < b.sourceKey ? -1 : a.sourceKey > b.sourceKey ? 1 : 0);
+    });
+    var values = {}; var totalBytes = 0;
+    for (var c = 0; c < candidates.length; c++) {
+      var candidate = candidates[c];
+      if (values[candidate.normalizedKey] !== undefined) continue;
+      if (Object.keys(values).length >= SYNC_MAX_KEYS || totalBytes + candidate.serialized.length > SYNC_MAX_TOTAL_BYTES) { skipped++; continue; }
+      values[candidate.normalizedKey] = candidate.serialized;
+      totalBytes += candidate.serialized.length;
+    }
+
+    var previousShadow = window.__imt_sync_shadow && typeof window.__imt_sync_shadow === "object" ? window.__imt_sync_shadow : {};
+    var deletedKeys = [];
+    Object.keys(previousShadow).forEach(function (key) { if (!observed[key]) deletedKeys.push(key); });
+    deletedKeys.sort();
+    var deletionBudget = Math.max(0, SYNC_MAX_KEYS - Object.keys(values).length);
+    var emittedDeletedKeys = deletedKeys.slice(0, deletionBudget);
+    var nextShadow = {};
+    Object.keys(observed).forEach(function (key) { nextShadow[key] = true; });
+    deletedKeys.slice(deletionBudget).forEach(function (key) { nextShadow[key] = true; });
+    skipped += Math.max(0, deletedKeys.length - emittedDeletedKeys.length);
+    window.__imt_sync_revision = Number(window.__imt_sync_revision || 0) + 1;
+    var snapshot = { version: 1, scope: SYNC_SCOPE_DASHBOARD, revision: String(Date.now()) + "-" + String(window.__imt_sync_revision), values: values, deletedKeys: emittedDeletedKeys, hash: _hashSyncPayload(values, emittedDeletedKeys), skipped: skipped };
+    window.__imt_sync_pending_snapshot = { snapshot: snapshot, shadow: nextShadow };
+    return snapshot;
+  }
+
+  function _handleRuntimeMessage(msgType, data, payload) {
+    if (msgType === "getOrCreatePkceChallenge" || msgType === "getOrCreatePkceChallengeAsync") return _getOrCreatePkceChallenge();
+    if (msgType === "exchangePkceToken" || msgType === "submitPkceAuthCodeAsync") return _exchangePkceToken(data || {});
+    if (msgType === "getManifest") return { manifest_version: 3, name: "Immersive Translate", version: BRIDGE_VERSION, _imtBridgeVersion: BRIDGE_VERSION, _isUserscript: true };
+    if (msgType === "checkExtension") return { success: true, detected: true };
+    if (msgType === "ping") return "pong";
+    if (msgType === "getConfig" || msgType === "getUserConfig") return _getFullLocalUserConfig();
+    if (msgType === "setUserConfig") return _setAndCommitFullLocalUserConfig(data);
+    if (msgType === "getUserInfo" || msgType === "getAccount" || msgType === "getLoginInfo") return _hasStoredAuthToken() ? gmv("userInfo", null) : null;
+    if (msgType === "getStorage" || msgType === "getLocalStorage") return getAllConfig();
+    if (msgType === "getAuthToken" || msgType === "auth" || msgType === "getToken") return gmv("authToken", null) || gmv("GoogleAccessToken", null) || gmv("auth", null);
+    if (msgType === "getSubscription" || msgType === "getSubscriptionInfo") return _hasStoredAuthToken() ? gmv("subscriptionInfo", null) : null;
+    return { success: false, error: "unsupported_message", type: msgType || "unknown" };
+  }
+
+  function _normalizeRuntimeMessage(message) {
+    var msg = message && typeof message === "object" ? message : {};
+    var isEnvelope = !!(msg && typeof msg.to === "string" && msg.payload && typeof msg.payload === "object");
+    var payload = isEnvelope ? msg.payload : msg;
+    payload = payload && typeof payload === "object" ? payload : {};
+    var msgType = payload.type || payload.action || payload.method || "";
+    var data = payload.data !== undefined ? payload.data : payload;
+
+    window.__imt_msg_logs = window.__imt_msg_logs || [];
+    // Keep diagnostics useful without retaining auth codes, tokens, or arbitrary page data.
+    window.__imt_msg_logs.push({ t: Date.now(), type: msgType, requestIdLength: data && data.requestId ? String(data.requestId).length : 0 });
+    return { isEnvelope: isEnvelope, payload: payload, msgType: msgType, data: data };
+  }
+
+  function _handleDocumentMessage(msgType, data) {
+    // Accounts only needs these two methods. Keep the document surface
+    // narrower than chrome.runtime so page code cannot read/write GM storage.
+    if (msgType === "getOrCreatePkceChallengeAsync") return _getOrCreatePkceChallenge();
+    if (msgType === "submitPkceAuthCodeAsync") return _exchangePkceToken(data || {});
+    return { ok: false, code: "unsupported_message", message: "Document bridge method is not supported", retryable: false };
+  }
+
+  function _invokeDocumentMessage(message) {
+    var normalized = _normalizeRuntimeMessage(message);
+    return Promise.resolve().then(function () { return _handleDocumentMessage(normalized.msgType, normalized.data); }).catch(function () {
+      return { ok: false, code: "message_failed", message: "Document bridge request failed", retryable: true };
+    });
+  }
+
+  function _invokeRuntimeMessage(message) {
+    var normalized = _normalizeRuntimeMessage(message);
+    var result = Promise.resolve().then(function () {
+      return _handleRuntimeMessage(normalized.msgType, normalized.data, normalized.payload);
+    });
+    if (normalized.isEnvelope) {
+      result = result.then(function (response) { return { ok: true, data: response }; }, function (error) {
+        return { ok: false, errorName: error && error.name || "MessageError", errorMessage: "Message handling failed" };
+      });
+    }
+    return result;
+  }
+
+  function _sendRuntimeMessage(argsLike) {
+    var args = Array.prototype.slice.call(argsLike || []);
+    var cb = null;
+    for (var i = args.length - 1; i >= 0; i--) {
+      if (typeof args[i] === "function") { cb = args[i]; break; }
+    }
+    var msg = null;
+    for (var j = 0; j < args.length; j++) {
+      if (args[j] && typeof args[j] === "object") { msg = args[j]; break; }
+    }
+    var result = _invokeRuntimeMessage(msg);
+    if (cb) {
+      result.then(function (response) { setTimeout(function () { cb(response); }, 0); }, function () { setTimeout(function () { cb({ success: false, error: "message_failed" }); }, 0); });
+      return undefined;
+    }
+    return result;
+  }
+
+  function _buildRuntimeAPI() {
+    return {
+      getManifest: function () {
+        return {
+          manifest_version: 3,
+          name: "Immersive Translate",
+          version: BRIDGE_VERSION,
+          _imtBridgeVersion: BRIDGE_VERSION,
+          _isUserscript: true,
+        };
+      },
+      lastError: null,
+      getContexts: function () {
+        return [
+          {
+            contextType: "TAB",
+            documentId: "imt-main",
+            documentOrigin: "https://dash.immersivetranslate.com",
+            windowId: 1,
+            tabId: 1,
+          },
+        ];
+      },
+      ContextType: {
+        TAB: "TAB",
+        BACKGROUND: "BACKGROUND",
+        POPUP: "POPUP",
+        SIDE_PANEL: "SIDE_PANEL",
+        OFFSCREEN_DOCUMENT: "OFFSCREEN_DOCUMENT",
+      },
+      id: "bpoadfkcbjbfhfodiogcnhhhpibjhbnh",
+      openOptionsPage: function () {},
+      getURL: function (e) {
+        return e;
+      },
+      sendMessage: function () { return _sendRuntimeMessage(arguments); },
+      onMessage: {
+        addListener: function () {},
+        removeListener: function () {},
+      },
+      onConnect: { addListener: function () {} },
+      connect: function () {
+        return {
+          onMessage: { addListener: function () {} },
+          postMessage: function () {},
+          disconnect: function () {},
+        };
+      },
+    };
+  }
+
+  function _buildStorageAPI() {
+    return {
+      get: async function (e) {
+        if (e === null) {
+          var r = lv();
+          var i = {};
+          for (var a = 0; a < r.length; a++) i[r[a]] = gmv(r[a]);
+          return i;
+        }
+        var t = [];
+        if (typeof e === "string") t = [e];
+        else if (Array.isArray(e)) t = e;
+        else if (typeof e === "object") t = Object.keys(e);
+        var n = {};
+        for (var a = 0; a < t.length; a++) n[t[a]] = gmv(t[a], typeof e === "object" ? e[t[a]] : undefined);
+        return n;
+      },
+      set: async function (e) {
+        for (var t in e) await smv(t, e[t]);
+        window.__imt_config_updated = Date.now();
+      },
+      remove: async function (e) {
+        if (typeof e === "string") dmv(e);
+        else if (Array.isArray(e)) for (var a = 0; a < e.length; a++) dmv(e[a]);
+      },
+    };
+  }
+
+  function _installCoreAPI() {
+    var Q8 = _buildStorageAPI();
+    var runtimeAPI = _buildRuntimeAPI();
+    var storageOnChanged = {
+      addListener: function (listener) { if (typeof listener === "function" && _storageChangeListeners.indexOf(listener) < 0) _storageChangeListeners.push(listener); },
+      removeListener: function (listener) { _storageChangeListeners = _storageChangeListeners.filter(function (item) { return item !== listener; }); },
+      hasListener: function (listener) { return _storageChangeListeners.indexOf(listener) >= 0; },
+    };
+    var storageAPI = { local: Q8, sync: Q8, onChanged: storageOnChanged };
+    var browserAPI = {
+      i18n: {
+        getAcceptLanguages: function () {
+          return navigator.languages || [navigator.language || ""];
+        },
+        detectLanguage: async function () {
+          return "auto";
+        },
+      },
+    };
+    Object.defineProperty(browserAPI, "storage", { value: storageAPI, enumerable: true });
+    Object.defineProperty(browserAPI, "runtime", { value: runtimeAPI, enumerable: true });
+    _coreBrowserAPI = browserAPI;
+
+    // The Dashboard userscript installs a hidden-input adapter under the same
+    // global name. Keep storage/runtime on this preload-owned seam while
+    // accepting its harmless optional modules.
+    var adoptPageAPI = function (candidate) {
+      if (!candidate || candidate === browserAPI || typeof candidate !== "object") return;
+      var extensionKeys = ["contextMenus", "permissions", "tabs"];
+      for (var i = 0; i < extensionKeys.length; i++) {
+        var key = extensionKeys[i];
+        if (Object.prototype.hasOwnProperty.call(candidate, key)) browserAPI[key] = candidate[key];
+      }
+    };
+    var existingBrowserAPI = null;
+    try { existingBrowserAPI = window.immersiveTranslateBrowserAPI; } catch (e) {}
+    adoptPageAPI(existingBrowserAPI);
+    try {
+      Object.defineProperty(window, "immersiveTranslateBrowserAPI", {
+        configurable: false,
+        enumerable: true,
+        get: function () { return browserAPI; },
+        set: adoptPageAPI,
+      });
+    } catch (e) {
+      try { window.immersiveTranslateBrowserAPI = browserAPI; } catch (e2) {}
+    }
+
+    window.GM = {
+      info: {
+        script: {
+          version: BRIDGE_VERSION,
+          name: "Immersive Translate",
+          namespace: "https://immersivetranslate.com",
+          _isUserscript: true,
+        },
+        platform: "obsidian",
+      },
+      getValue: gmv,
+      setValue: smv,
+      deleteValue: dmv,
+      listValues: lv,
+      addStyle: function (c) {
+        try {
+          var s = document.createElement("style");
+          s.textContent = c;
+          (document.head || document.documentElement).appendChild(s);
+          return s;
+        } catch (e) { return null; }
+      },
+      openInTab: _openInTab,
+      registerMenuCommand: function () { return 0; },
+      addElement: function () { return null; },
+      xmlHttpRequest: function () {},
+    };
+
+    window.GM_getValue = gmv;
+    window.GM_setValue = smv;
+    window.GM_deleteValue = dmv;
+    window.GM_listValues = lv;
+    window.GM_info = window.GM.info;
+    window.GM_xmlhttpRequest = function () {};
+    window.GM_openInTab = _openInTab;
+    window.GM_registerMenuCommand = function () { return 0; };
+    window.GM_addStyle = window.GM.addStyle;
+    window.GM_addElement = function () { return null; };
+
+    if (!window.chrome) window.chrome = {};
+    window.chrome.runtime = runtimeAPI;
+    window.chrome.storage = storageAPI;
+
+  }
+
+  function _installLocalStorageBridge() {
+    if (window.__imt_ls_bridged) return;
+    window.__imt_ls_bridged = true;
+
+    var _origGetItem = localStorage.getItem;
+    var _origSetItem = localStorage.setItem;
+    var _origRemoveItem = localStorage.removeItem;
+    var _origClear = localStorage.clear;
+
+    var _importantKeys = [
+      "immersiveTranslateIMT_COMMON_JWT_TOKEN",
+      "immersiveTranslateGoogleAccessToken",
+      "immersiveTranslateAuthFlow",
+      "immersiveTranslateAuthState",
+      "immersive-translate-config-latest.json",
+      "user_info"
+    ];
+    var isImportantKey = function (key) { return _importantKeys.indexOf(String(key)) >= 0; };
+    // Logout may remove a raw Dashboard key; remove every mirrored alias so stale identity data cannot be re-synced.
+    var _authAliasGroups = [
+      ["userInfo", "user_info"],
+      ["authToken", "user_token", "immersiveTranslateIMT_COMMON_JWT_TOKEN", "immersiveTranslateGoogleAccessToken", "auth", "GoogleAccessToken"],
+      ["subscriptionInfo"],
+      ["immersiveTranslateAuthFlow", "immersiveTranslateAuthState"],
+    ];
+    var removeAuthAliases = function (key) {
+      var bareKey = String(key);
+      if (bareKey.indexOf(P) === 0) bareKey = bareKey.slice(P.length);
+      for (var groupIndex = 0; groupIndex < _authAliasGroups.length; groupIndex++) {
+        var group = _authAliasGroups[groupIndex];
+        if (group.indexOf(bareKey) < 0) continue;
+        _captureGeneration++;
+        for (var aliasIndex = 0; aliasIndex < group.length; aliasIndex++) {
+          _origRemoveItem.call(localStorage, group[aliasIndex]);
+          _origRemoveItem.call(localStorage, P + group[aliasIndex]);
+        }
+        return;
+      }
+    };
+
+    localStorage.getItem = function(key) {
+      var val = _origGetItem.call(localStorage, key);
+      if (val === null && key.indexOf(P) !== 0) {
+        val = _origGetItem.call(localStorage, P + key);
+      }
+      return val;
+    };
+
+    localStorage.setItem = function(key, value) {
+      _origSetItem.call(localStorage, key, value);
+      if (key.indexOf(P) !== 0 && isImportantKey(key)) {
+        _origSetItem.call(localStorage, P + key, value);
+      }
+      if (isImportantKey(key)) {
+        try {
+          var parsed = typeof value === "string" ? JSON.parse(value) : value;
+          if (key === "user_info") {
+            var userInfo = _sanitizeSyncUserInfo(parsed, true);
+            if (userInfo && _hasStoredAuthToken()) smv("userInfo", userInfo);
+          }
+        } catch (e) {}
+        if ((key === "immersiveTranslateIMT_COMMON_JWT_TOKEN" || key === "immersiveTranslateGoogleAccessToken") && typeof value === "string" && value.length >= 16) {
+          smv("authToken", value);
+          _backfillUserInfoFromPageStore();
+        }
+      }
+    };
+
+    localStorage.removeItem = function(key) {
+      _origRemoveItem.call(localStorage, key);
+      if (key.indexOf(P) !== 0 && isImportantKey(key)) {
+        _origRemoveItem.call(localStorage, P + key);
+      }
+      removeAuthAliases(key);
+    };
+
+    if (typeof _origClear === "function") localStorage.clear = function() {
+      _captureGeneration++;
+      _clearPkceSession();
+      return _origClear.call(localStorage);
+    };
+
+    try {
+      for (var j = 0; j < _importantKeys.length; j++) {
+        var v = _origGetItem.call(localStorage, _importantKeys[j]);
+        if (v) {
+          _origSetItem.call(localStorage, P + _importantKeys[j], v);
+          try {
+            var p = JSON.parse(v);
+            if (_importantKeys[j] === "user_info") {
+              var userInfo = _sanitizeSyncUserInfo(p, true);
+              if (userInfo && _hasStoredAuthToken()) smv("userInfo", userInfo);
+            }
+            if (typeof v === "string" && v.length >= 16 && (_importantKeys[j] === "immersiveTranslateIMT_COMMON_JWT_TOKEN" || _importantKeys[j] === "immersiveTranslateGoogleAccessToken")) {
+              smv("authToken", v);
+              _backfillUserInfoFromPageStore();
+            }
+          } catch (e) {
+            if (typeof v === "string" && v.length >= 16 && (_importantKeys[j] === "immersiveTranslateIMT_COMMON_JWT_TOKEN" || _importantKeys[j] === "immersiveTranslateGoogleAccessToken")) {
+              smv("authToken", v);
+              _backfillUserInfoFromPageStore();
+            }
+          }
+        }
+      }
+    } catch (e) {}
+
+  }
+
+  function _installSessionStorageBridge() {
+    if (window.__imt_ss_bridged) return;
+    window.__imt_ss_bridged = true;
+
+    var SS_BACKUP_KEY = "__imt_session_backup";
+    var ALLOWED_SESSION_KEYS = { "immersiveTranslateAuthFlow": true, "immersiveTranslateAuthState": true };
+    var isAllowedSessionKey = function (key) { return Object.prototype.hasOwnProperty.call(ALLOWED_SESSION_KEYS, String(key)); };
+
+    try {
+      var saved = localStorage.getItem(SS_BACKUP_KEY);
+      if (saved) {
+        var data = JSON.parse(saved);
+        for (var k in data) {
+          if (isAllowedSessionKey(k)) try { sessionStorage.setItem(k, data[k]); } catch (e) {}
+        }
+        var sanitized = {};
+        for (var savedKey in data) if (isAllowedSessionKey(savedKey)) sanitized[savedKey] = data[savedKey];
+        if (Object.keys(sanitized).length > 0) localStorage.setItem(SS_BACKUP_KEY, JSON.stringify(sanitized));
+        else localStorage.removeItem(SS_BACKUP_KEY);
+      }
+    } catch (e) {
+      localStorage.removeItem(SS_BACKUP_KEY);
+    }
+
+    var _origSSGetItem = sessionStorage.getItem;
+    var _origSSSetItem = sessionStorage.setItem;
+    var _origSSRemoveItem = sessionStorage.removeItem;
+    var _origSSClear = sessionStorage.clear;
+
+    sessionStorage.getItem = function(key) {
+      var val = _origSSGetItem.call(sessionStorage, key);
+      if (val === null && isAllowedSessionKey(key)) {
+        try {
+          var bk = JSON.parse(localStorage.getItem(SS_BACKUP_KEY) || "{}");
+          val = bk[key] || null;
+        } catch (e) { val = null; }
+      }
+      return val;
+    };
+
+    sessionStorage.setItem = function(key, value) {
+      _origSSSetItem.call(sessionStorage, key, value);
+      if (!isAllowedSessionKey(key)) return;
+      try {
+        var bk = JSON.parse(localStorage.getItem(SS_BACKUP_KEY) || "{}");
+        bk[key] = value;
+        localStorage.setItem(SS_BACKUP_KEY, JSON.stringify(bk));
+      } catch (e) {}
+    };
+
+    sessionStorage.removeItem = function(key) {
+      if (String(key) === PKCE_LEGACY_SESSION_KEY) _clearPkceSession();
+      _origSSRemoveItem.call(sessionStorage, key);
+      if (!isAllowedSessionKey(key)) return;
+      try {
+        var bk = JSON.parse(localStorage.getItem(SS_BACKUP_KEY) || "{}");
+        delete bk[key];
+        localStorage.setItem(SS_BACKUP_KEY, JSON.stringify(bk));
+      } catch (e) {}
+    };
+
+    if (typeof _origSSClear === "function") sessionStorage.clear = function() {
+      _captureGeneration++;
+      _clearPkceSession();
+      var result = _origSSClear.call(sessionStorage);
+      try { localStorage.removeItem(SS_BACKUP_KEY); } catch (e) {}
+      return result;
+    };
+
+  }
+
+  function _installPollGuard() {
+    var _pollCount = 0;
+    var _pollMax = 200;
+    var _pollTimer = setInterval(function () {
+      _pollCount++;
+
+      try {
+        if (!window.immersiveTranslateBrowserAPI || window.immersiveTranslateBrowserAPI !== _coreBrowserAPI) {
+          _installCoreAPI();
+        }
+        if (!window.chrome || window.chrome.runtime !== _coreBrowserAPI.runtime || window.chrome.storage !== _coreBrowserAPI.storage) {
+          window.chrome = window.chrome || {};
+          window.chrome.runtime = _coreBrowserAPI.runtime;
+          window.chrome.storage = _coreBrowserAPI.storage;
+        }
+        _installLocalStorageBridge();
+        _installSessionStorageBridge();
+        _ensureAllHiddenInputs();
+        ensureSyncUI();
+      } catch (e) {}
+
+      if (_pollCount >= _pollMax) {
+        clearInterval(_pollTimer);
+      }
+    }, 100);
+  }
+
+  function initMessageBridge() {
+    document.addEventListener(J + "-ask", function (e) {
+      var detail = e.detail || {};
+      var response = { id: detail.id || Date.now().toString(), type: "answer" };
+      if (detail.method === "request") {
+        var path = detail.path || "";
+        if (path.indexOf("user/info") >= 0) response.data = gmv("userInfo", null);
+        else if (path.indexOf("config") >= 0) response.data = gmv("fullLocalUserConfig", {});
+        else if (path.indexOf("subscription") >= 0) response.data = gmv("subscriptionInfo", null);
+        else response.data = {};
+      } else {
+        response.result = true;
+      }
+      document.dispatchEvent(new CustomEvent(J + "-answer", { detail: response }));
+    });
+    document.addEventListener(DOCUMENT_REQUEST_EVENT, function (event) {
+      var message;
+      try {
+        message = typeof event.detail === "string" ? JSON.parse(event.detail) : event.detail;
+      } catch (e) { return; }
+      if (!message || typeof message !== "object") return;
+      // Accounts correlates replies by both id and type.
+      var result = _invokeDocumentMessage(message);
+      result.catch(function () { return { ok: false, error: "message_failed" }; }).then(function (response) {
+        document.dispatchEvent(new CustomEvent(DOCUMENT_RESPONSE_EVENT, {
+          detail: JSON.stringify({ id: message.id || Date.now().toString(), type: message.type, payload: response }),
+        }));
+      });
+    });
+  }
+
+  function initSyncUI() {
+    var existing = document.getElementById("imt-obsidian-bridge");
+    if (existing) return existing;
+
+    var c = document.createElement("div");
+    c.id = "imt-obsidian-bridge";
+    c.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:999999;display:flex;flex-direction:column;gap:8px;font-family:system-ui,sans-serif";
+
+    var status = document.createElement("div");
+    status.id = "imt-auth-status";
+    status.style.cssText = "padding:7px 10px;background:rgba(15,23,42,.92);color:#fff;border-radius:8px;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,.2)";
+    c.appendChild(status);
+
+    var b1 = document.createElement("button");
+    b1.id = "imt-sync-btn";
+    b1.style.cssText = "padding:10px 20px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3);font-weight:500";
+    b1.textContent = "\u2b06 \u7acb\u5373\u540c\u6b65\u914d\u7f6e\u5230 Obsidian";
+    b1.onclick = function () {
+      var snapshot = _buildSyncSnapshot();
+      if (!snapshot) {
+        b1.textContent = "\u26a0 \u540c\u6b65\u5931\u8d25";
+        return;
+      }
+      window.__imt_sync_data = JSON.stringify(snapshot);
+      b1.textContent = "\u2705 \u5df2\u51c6\u5907\u540c\u6b65";
+      b1.style.background = "#059669";
+      b1.disabled = true;
+      setTimeout(function () {
+        b1.textContent = "\u2b06 \u7acb\u5373\u540c\u6b65\u914d\u7f6e\u5230 Obsidian";
+        b1.style.background = "#7c3aed";
+        b1.disabled = false;
+      }, 3000);
+    };
+    c.appendChild(b1);
+
+    _safeAppend(c);
+    refreshSyncUIStatus();
+    return c;
+  }
+
+  function refreshSyncUIStatus() {
+    var status = document.getElementById("imt-auth-status");
+    if (!status) return;
+    var token = gmv("authToken", "");
+    status.textContent = typeof token === "string" && token
+      ? "\u2713 \u5df2\u767b\u5f55 \u00b7 \u81ea\u52a8\u540c\u6b65\u5df2\u5f00\u542f"
+      : "\u7b49\u5f85\u767b\u5f55 \u00b7 \u767b\u5f55\u540e\u5c06\u81ea\u52a8\u540c\u6b65";
+  }
+
+  function ensureSyncUI() {
+    var current = document.getElementById("imt-obsidian-bridge");
+    if (!current) current = initSyncUI();
+    refreshSyncUIStatus();
+    return current;
+  }
+
+  function _captureKind(url) {
+    try {
+      var parsed = new URL(url, location.href);
+      if (parsed.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(ALLOWED_HOSTS, parsed.hostname.toLowerCase())) return "";
+      var path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
+      if (/(^|\/)(?:api\/translate\/user|v\d+\/user(?:\/(?:info|profile))?|user\/(?:info|profile)|account\/(?:info|profile))$/.test(path)) return "user";
+      if (/(^|\/)(?:oauth\/token|auth\/token|api\/token|token)$/.test(path)) return "auth";
+      if (/(^|\/)(?:subscription|subscription\/info|membership)$/.test(path)) return "subscription";
+      if (/(^|\/)(?:user\/(?:settings|config)|member\/config|settings|preferences|config)$/.test(path)) return "config";
+      if (/(^|\/)(?:translate\/services|services|service-config)$/.test(path)) return "services";
+    } catch (e) {}
+    return "";
+  }
+
+  function _safeStore(key, value, maxBytes) {
+    try {
+      var serialized = JSON.stringify(value);
+      if (serialized.length > maxBytes) return false;
+      localStorage.setItem(P + key, serialized);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function _extractServiceAvailabilityConfig(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (!Object.prototype.hasOwnProperty.call(value, "translationServices")) return null;
+    var services = value.translationServices;
+    if (!services || typeof services !== "object" || Array.isArray(services)) return null;
+    var safeServices = {};
+    for (var serviceId in services) {
+      if (!Object.prototype.hasOwnProperty.call(services, serviceId) || _isUnsafeSyncProperty(serviceId) || serviceId.length > 256) continue;
+      var service = services[serviceId];
+      if (!service || typeof service !== "object" || Array.isArray(service)) continue;
+      var availability = {};
+      for (var field in SERVICE_AVAILABILITY_FIELDS) {
+        if (typeof service[field] === "boolean") availability[field] = service[field];
+      }
+      if (Object.keys(availability).length > 0) safeServices[serviceId] = availability;
+    }
+    return Object.keys(safeServices).length > 0 ? { translationServices: safeServices } : null;
+  }
+
+  function _mergeConfigValue(current, patch, depth) {
+    if (depth > 8 || !patch || typeof patch !== "object" || Array.isArray(patch)) return patch;
+    var next = {};
+    if (current && typeof current === "object" && !Array.isArray(current)) {
+      for (var currentField in current) {
+        if (Object.prototype.hasOwnProperty.call(current, currentField) && !_isUnsafeSyncProperty(currentField)) next[currentField] = current[currentField];
+      }
+    }
+    for (var patchField in patch) {
+      if (!Object.prototype.hasOwnProperty.call(patch, patchField) || _isUnsafeSyncProperty(patchField)) continue;
+      next[patchField] = _mergeConfigValue(next[patchField], patch[patchField], depth + 1);
+    }
+    return next;
+  }
+
+  function _mergeFullLocalUserConfig(current, patch) {
+    var safePatch = _sanitizeFullLocalUserConfig(patch);
+    if (!safePatch) return null;
+    var safeCurrent = _sanitizeFullLocalUserConfig(current) || {};
+    return _sanitizeFullLocalUserConfig(_mergeConfigValue(safeCurrent, safePatch, 0));
+  }
+
+  function _mergeServiceAvailabilityConfig(current, patch) {
+    var safePatch = _extractServiceAvailabilityConfig(patch);
+    if (!safePatch) return null;
+    var next = _sanitizeFullLocalUserConfig(current) || {};
+    var currentServices = next.translationServices && typeof next.translationServices === "object" && !Array.isArray(next.translationServices)
+      ? next.translationServices : {};
+    var mergedServices = {};
+    for (var existingId in currentServices) {
+      if (Object.prototype.hasOwnProperty.call(currentServices, existingId) && !_isUnsafeSyncProperty(existingId)) {
+        mergedServices[existingId] = currentServices[existingId];
+      }
+    }
+    for (var serviceId in safePatch.translationServices) {
+      if (!Object.prototype.hasOwnProperty.call(safePatch.translationServices, serviceId)) continue;
+      var existing = mergedServices[serviceId];
+      var merged = {};
+      if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+        for (var existingField in existing) {
+          if (Object.prototype.hasOwnProperty.call(existing, existingField) && !_isUnsafeSyncProperty(existingField)) merged[existingField] = existing[existingField];
+        }
+      }
+      var availability = safePatch.translationServices[serviceId];
+      for (var availabilityField in availability) {
+        if (Object.prototype.hasOwnProperty.call(availability, availabilityField)) merged[availabilityField] = availability[availabilityField];
+      }
+      mergedServices[serviceId] = merged;
+    }
+    next.translationServices = mergedServices;
+    return _sanitizeFullLocalUserConfig(next);
+  }
+
+  function _capturedFullLocalUserConfig(item, rootData) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    if (item.fullLocalUserConfig && typeof item.fullLocalUserConfig === "object") return _sanitizeFullLocalUserConfig(item.fullLocalUserConfig);
+    if (item.memberConfig && typeof item.memberConfig === "object") return _sanitizeFullLocalUserConfig(item.memberConfig);
+    if (item === rootData && ((item.data && typeof item.data === "object") || (item.result && typeof item.result === "object"))) return null;
+    return _sanitizeFullLocalUserConfig(item);
+  }
+
+  function _tryCaptureData(data, kind, generation, configGeneration) {
+    if (generation !== undefined && generation !== _captureGeneration) return;
+    if ((kind === "config" || kind === "services") && configGeneration !== undefined && configGeneration !== _configGeneration) return;
+    if (!data || typeof data !== "object") return;
+    if (kind === "user") {
+      if (!_hasStoredAuthToken()) return;
+      var userInfo = _sanitizeSyncUserInfo(data);
+      if (userInfo) _safeStore("userInfo", userInfo, 64 * 1024);
+      return;
+    }
+    var candidates = [data];
+    if (data.data && typeof data.data === "object") candidates.push(data.data);
+    if (data.result && typeof data.result === "object") candidates.push(data.result);
+    for (var i = 0; i < candidates.length; i++) {
+      var item = candidates[i];
+      if (kind === "auth") {
+        var token = item.token || item.accessToken || item.access_token || item.jwt || item.authToken;
+        if (typeof token === "string" && token.length >= 16 && token.length <= 8192) smv("authToken", token);
+      } else if (kind === "subscription") {
+        if (_hasStoredAuthToken() && (item.subscription || item.plan || item.membership || item.vipInfo)) _safeStore("subscriptionInfo", item, 128 * 1024);
+      } else if (kind === "config") {
+        var capturedConfig = _capturedFullLocalUserConfig(item, data);
+        var mergedConfig = capturedConfig && _mergeFullLocalUserConfig(_getFullLocalUserConfig(), capturedConfig);
+        if (mergedConfig) _storeFullLocalUserConfig(mergedConfig);
+      } else if (kind === "services") {
+        var serviceList = item.translationServices || item.translateServices || item.services;
+        var mergedAvailability = _mergeServiceAvailabilityConfig(_getFullLocalUserConfig(), { translationServices: serviceList });
+        if (mergedAvailability) _storeFullLocalUserConfig(mergedAvailability);
+      }
+    }
+  }
+
+  function _isSuccessfulCaptureStatus(value) {
+    var status = Number(value);
+    return isFinite(status) && status >= 200 && status < 300;
+  }
+
+  function initFetchInterceptor() {
+    if (window.__imt_fetch_intercepted) return;
+    window.__imt_fetch_intercepted = true;
+    var _origFetch = window.fetch;
+    window.fetch = function () {
+      var args = arguments;
+      var url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+      var kind = _captureKind(url);
+      var captureGeneration = _captureGeneration;
+      var configCaptureGeneration = _configGeneration;
+      return _origFetch.apply(this, args).then(function (resp) {
+        if (kind && _isSuccessfulCaptureStatus(resp && resp.status)) {
+          try {
+            resp.clone().json().then(function (d) {
+              _tryCaptureData(d, kind, captureGeneration, configCaptureGeneration);
+            }).catch(function () {});
+          } catch (e) {}
+        }
+        return resp;
+      }).catch(function (e) { throw e; });
+    };
+
+    var _origXHR = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (m, u) {
+      this._imtUrl = u;
+      this._imtMethod = m;
+      this._imtCaptureKind = _captureKind(u);
+      return _origXHR.apply(this, arguments);
+    };
+    var _origXHRSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (body) {
+      var xhr = this;
+      var captureGeneration = _captureGeneration;
+      var configCaptureGeneration = _configGeneration;
+      xhr._imtCaptureGeneration = captureGeneration;
+      xhr._imtConfigCaptureGeneration = configCaptureGeneration;
+      var captureResponse = function () {
+        try {
+          if (xhr._imtCaptureKind && _isSuccessfulCaptureStatus(xhr.status)) {
+            var d = JSON.parse(xhr.responseText);
+            _tryCaptureData(d, xhr._imtCaptureKind, xhr._imtCaptureGeneration, xhr._imtConfigCaptureGeneration);
+          }
+        } catch (e) {}
+      };
+      if (xhr._imtCaptureKind && typeof xhr.addEventListener === "function") xhr.addEventListener("load", captureResponse);
+      else if (xhr._imtCaptureKind) {
+        var origOnLoad = xhr.onload;
+        xhr.onload = function () { captureResponse(); if (origOnLoad) origOnLoad.apply(this, arguments); };
+      }
+      return _origXHRSend.apply(this, arguments);
+    };
+  }
+
+  _ensureBridgeMetadata();
+  // Preload can run before <head> exists; retry when the document has been built.
+  try { document.addEventListener("DOMContentLoaded", _ensureBridgeMetadata); } catch (e) {}
+  _initPkceHostBridge();
+  _installLocalStorageBridge();
+  _installAuthenticatedAccountCloseGuard();
+  _hydratePersistedAuthState();
+  _installSessionStorageBridge();
+  _ensureAllHiddenInputs();
+  _installCoreAPI();
+  _installPollGuard();
+  initMessageBridge();
+  initFetchInterceptor();
+  window.__imt_build_sync_snapshot = _buildSyncSnapshot;
+  window.__imt_apply_host_config = function (config) {
+    var safeConfig = _sanitizeFullLocalUserConfig(config);
+    return !!(safeConfig && _storeFullLocalUserConfig(safeConfig));
+  };
+  // The host calls this idempotent interface after navigation. UI ownership
+  // stays in the preload so there is only one implementation to keep current.
+  window.__imt_ensure_sync_ui = ensureSyncUI;
+  // The Obsidian host reads authentication only through this narrow accessor.
+  // Do not expose the Dashboard's raw localStorage or browser-cookie surface.
+  window.__imt_get_auth_state = function () {
+    var token = gmv("authToken", "");
+    var normalizedToken = typeof token === "string" ? token : "";
+    return {
+      version: 1,
+      authenticated: normalizedToken.length > 0,
+      token: normalizedToken,
+      userInfo: normalizedToken.length > 0 ? _sanitizeSyncUserInfo(gmv("userInfo", null), true) : null,
+    };
+  };
+
+  setTimeout(function () { _setPageReady(); }, 300);
+
+  if (document.body) {
+    ensureSyncUI();
+  } else {
+    var _onDOMReady = function () {
+      ensureSyncUI();
+    };
+    if (document.addEventListener) {
+      document.addEventListener("DOMContentLoaded", _onDOMReady);
+    }
+  }
+
+  window.__imt_bridge_ready = true;
+  }
+
+  var HOST_API_NAME = "__imtDashboardHost";
+  var PKCE_IPC_ARGUMENT_PREFIX = "--imt-pkce-channel=";
+  var HOST_REQUEST_TIMEOUT_MS = 30 * 1000;
+  var HOST_MAX_PENDING_REQUESTS = 64;
+  var HOST_MAX_CONFIG_BYTES = 512 * 1024;
+  var HOST_REQUEST_TYPES = {
+    clearPkceSession: true,
+    getOrCreatePkceChallengeAsync: true,
+    getPersistedAuthState: true,
+    submitPkceAuthCodeAsync: true,
+    navigateTrustedDashboard: true,
+    commitDashboardConfig: true,
+  };
+
+  function _hostFailure(code, message, retryable) {
+    return { ok: false, code: code, message: message, retryable: retryable === true };
+  }
+
+  function _normalizeHostRequest(type, data) {
+    if (!Object.prototype.hasOwnProperty.call(HOST_REQUEST_TYPES, type)) return null;
+    if (type === "clearPkceSession" || type === "getOrCreatePkceChallengeAsync" || type === "getPersistedAuthState") return {};
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    if (type === "submitPkceAuthCodeAsync") {
+      var requestId = typeof data.requestId === "string" ? data.requestId : "";
+      var authCode = typeof data.authCode === "string" ? data.authCode : "";
+      return requestId && requestId.length <= 256 && authCode.length <= 4096
+        ? { requestId: requestId, authCode: authCode }
+        : null;
+    }
+    if (type === "navigateTrustedDashboard") {
+      return typeof data.url === "string" && data.url.length > 0 && data.url.length <= 2048 ? { url: data.url } : null;
+    }
+    if (type === "commitDashboardConfig") {
+      if (!data.config || typeof data.config !== "object" || Array.isArray(data.config)) return null;
+      try {
+        if (JSON.stringify(data.config).length > HOST_MAX_CONFIG_BYTES) return null;
+      } catch (e) { return null; }
+      return { config: data.config };
+    }
+    return null;
+  }
+
+  function _installDashboardHostBridge() {
+    var allowedHosts = {
+      "dash.immersivetranslate.com": true,
+      "app.immersivetranslate.com": true,
+      "immersivetranslate.com": true,
+      "onboarding.immersivetranslate.com": true,
+      "immersive-translate.owenyoung.com": true,
+    };
+    try {
+      if (location.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(allowedHosts, location.hostname.toLowerCase())) return;
+    } catch (e) { return; }
+    var electron;
+    try { electron = require("electron"); } catch (e) { return; }
+    if (!electron || !electron.contextBridge || !electron.ipcRenderer || !electron.webFrame) return;
+    var channel = "";
+    var args = typeof process !== "undefined" && Array.isArray(process.argv) ? process.argv : [];
+    for (var index = 0; index < args.length; index++) {
+      if (String(args[index]).indexOf(PKCE_IPC_ARGUMENT_PREFIX) === 0) {
+        channel = String(args[index]).slice(PKCE_IPC_ARGUMENT_PREFIX.length);
+        break;
+      }
+    }
+    if (!/^imt-pkce-[a-f0-9]{32}$/.test(channel)) return;
+
+    var pending = Object.create(null);
+    var pendingCount = 0;
+    var requestSequence = 0;
+    electron.ipcRenderer.on(channel + ":response", function (_event, message) {
+      if (!message || typeof message !== "object") return;
+      var request = pending[message.id];
+      if (!request || request.type !== message.type) return;
+      delete pending[message.id];
+      pendingCount--;
+      clearTimeout(request.timeoutId);
+      request.resolve(message.payload);
+    });
+
+    electron.contextBridge.exposeInMainWorld(HOST_API_NAME, {
+      request: function (type, data) {
+        var normalizedType = typeof type === "string" ? type : "";
+        var normalizedData = _normalizeHostRequest(normalizedType, data);
+        if (!normalizedData) return Promise.resolve(_hostFailure("invalid_host_request", "Dashboard host request is invalid", false));
+        if (pendingCount >= HOST_MAX_PENDING_REQUESTS) return Promise.resolve(_hostFailure("host_busy", "Dashboard host is busy", true));
+        var id = "dashboard-" + Date.now().toString(36) + "-" + (++requestSequence).toString(36);
+        return new Promise(function (resolve) {
+          var timeoutId = setTimeout(function () {
+            if (!pending[id]) return;
+            delete pending[id];
+            pendingCount--;
+            resolve(_hostFailure("host_timeout", "Dashboard host request timed out", true));
+          }, HOST_REQUEST_TIMEOUT_MS);
+          pending[id] = { type: normalizedType, resolve: resolve, timeoutId: timeoutId };
+          pendingCount++;
+          try {
+            electron.ipcRenderer.send(channel, { id: id, type: normalizedType, data: normalizedData });
+          } catch (e) {
+            clearTimeout(timeoutId);
+            delete pending[id];
+            pendingCount--;
+            resolve(_hostFailure("pkce_host_unavailable", "PKCE host is unavailable", true));
+          }
+        });
+      },
+    });
+
+    var pageBridgeSource = "(" + installDashboardPageBridge.toString() + ")();";
+    Promise.resolve(electron.webFrame.executeJavaScript(pageBridgeSource)).catch(function () {
+      console.warn("[IMT-Preload] Dashboard page bridge injection failed");
+    });
+  }
+
+  _installDashboardHostBridge();
+})();

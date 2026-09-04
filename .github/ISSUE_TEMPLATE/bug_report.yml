@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible defect in the supported public-beta scope
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities belong in a private security advisory. Remove note text, file paths, identities, cookies, tokens, authorization headers, API keys, and credentials from public reports.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Use the version shown in manifest.json or Obsidian settings.
+      placeholder: 4.0.1
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version
+      placeholder: 1.12.7
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Other desktop environment
+    validations:
+      required: true
+  - type: dropdown
+    id: install-path
+    attributes:
+      label: Installation path
+      options:
+        - Fresh install from complete Pre-release ZIP
+        - Upgrade using complete Pre-release ZIP
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest steps, including Reading View, selected mode, and provider category. Use placeholders for account data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Paste only the smallest relevant, manually reviewed output.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I installed the complete ZIP from the latest GitHub prerelease.
+          required: true
+        - label: I reproduced this on the latest published beta.
+          required: true
+        - label: I removed private note content, paths, identities, and secrets.
+          required: true
+        - label: This report is within the supported scope described in SUPPORT.md.
+          required: true

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+releases/
+*.log
+.DS_Store
+Thumbs.db
+plugin/userscript.cache.js
+plugin/userscript.runtime.js
+plugin/userscript.runtime.js.installing-*
+plugin/userscript.runtime.js.backup-*
