@@ -227,8 +227,6 @@ function makePlugin() {
   plugin._isUnloaded = false;
   plugin._getDocumentPreloadPath = () => "/plugin/document-preload.js";
   plugin._initializeDocumentRuntime = () => ({ ok: true, code: "runtime_ready" });
-  plugin._isDashboardEmbeddedEnabled = () => true;
-  plugin._isDocumentWorkspaceEnabled = () => true;
   return plugin;
 }
 
@@ -263,7 +261,6 @@ test("settings expose account, Dashboard, and safe recovery controls at one leve
   localStorage.setItem("imt-gm-userInfo", JSON.stringify({ email: "reader@example.com", userType: "pro" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -316,20 +313,10 @@ test("settings expose account, Dashboard, and safe recovery controls at one leve
   plugin.onunload();
 });
 
-test("production default keeps the Dashboard entry available", () => {
-  setupRuntime();
-  const plugin = makePlugin();
-  delete plugin._isDashboardEmbeddedEnabled;
-
-  assert.equal(plugin._isDashboardEmbeddedEnabled(), true);
-  plugin.onunload();
-});
-
 test("production settings expose account and Dashboard controls", async () => {
   setupRuntime();
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -351,37 +338,12 @@ test("production settings expose account and Dashboard controls", async () => {
   plugin.onunload();
 });
 
-test("Dashboard gating does not hide the persisted account status", async () => {
-  setupRuntime();
-  localStorage.setItem("imt-gm-authToken", JSON.stringify("gated-token"));
-  localStorage.setItem("imt-gm-userInfo", JSON.stringify({ email: "gated@example.com", userType: "pro" }));
-  const plugin = makePlugin();
-  plugin._isDashboardEmbeddedEnabled = () => false;
-  plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
-  plugin._interceptNavigation = function () {};
-  plugin._detectAndHandleConflicts = function () {};
-  plugin._activateIMT = async function () { return false; };
-
-  await plugin.onload();
-  const settingTab = addedSettingTabs[0];
-  settingTab.display();
-  const text = collectText(settingTab.containerEl);
-
-  assert.match(text, /gated@example\.com/);
-  assert.match(text, /Pro 会员/);
-  assert.doesNotMatch(text, /打开 Dashboard/);
-  assert.doesNotMatch(text, /从已打开的 Dashboard 同步/);
-  plugin.onunload();
-});
-
 test("production settings keep the persisted account name and status visible with Dashboard enabled", async () => {
   setupRuntime();
   localStorage.setItem("imt-gm-authToken", JSON.stringify("settings-token"));
   localStorage.setItem("imt-gm-userInfo", JSON.stringify({ email: "reader@example.com", nickname: "Reader", userType: "pro" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -403,7 +365,6 @@ test("account status accepts a sanitized identity without an email address", asy
   localStorage.setItem("imt-gm-userInfo", JSON.stringify({ userId: 42, nickname: "Reader", userType: "max" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -425,7 +386,6 @@ test("account status falls back to the legacy user_info alias", async () => {
   localStorage.setItem("imt-gm-user_info", JSON.stringify({ email: "legacy@example.com", userType: "pro" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -447,7 +407,6 @@ test("account status accepts an id-only identity from either storage alias", asy
   localStorage.setItem("imt-gm-user_info", JSON.stringify({ id: 987654, userType: "pro" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -468,7 +427,6 @@ test("settings treat a leftover account profile without a token as signed out", 
   localStorage.setItem("imt-gm-userInfo", JSON.stringify({ email: "stale@example.com", userType: "pro" }));
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -510,7 +468,7 @@ test("runtime setup is started only by the settings action", async (t) => {
   assert.equal(requests, 0);
 
   const result = await plugin._installRuntimeFromOfficialSource();
-  assert.deepEqual(result, { ok: true, version: "9.7.3" });
+  assert.deepEqual(result, { ok: true, version: "9.7.3", restartRequired: false });
   assert.equal(requests, 1);
   assert.equal(plugin._getRuntimeStatus().version, "9.7.3");
 });
@@ -536,7 +494,7 @@ test("runtime installation resolves the standard Obsidian plugin directory when 
     };
   };
 
-  assert.deepEqual(await plugin._installRuntimeFromOfficialSource(), { ok: true, version: "9.7.3" });
+  assert.deepEqual(await plugin._installRuntimeFromOfficialSource(), { ok: true, version: "9.7.3", restartRequired: false });
   assert.equal(plugin._getRuntimeStatus().version, "9.7.3");
   assert.equal(fs.existsSync(path.join(pluginDir, "userscript.runtime.js")), true);
 });
@@ -545,7 +503,6 @@ test("settings action installs the runtime and refreshes its status", async () =
   setupRuntime();
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -569,7 +526,6 @@ test("settings action offers an update for an installed runtime", async () => {
   setupRuntime();
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -596,7 +552,6 @@ test("settings automatically show the installed and official current runtime ver
   fs.writeFileSync(path.join(pluginDir, "manifest.json"), JSON.stringify({ id: "immersive-translate-extended", version: "4.0.0" }));
   plugin._getPluginDir = () => pluginDir;
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -626,6 +581,42 @@ test("settings automatically show the installed and official current runtime ver
   }
 });
 
+test("settings show install phases and distinguish the loaded runtime from the disk runtime", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadSettings = async function () {};
+  plugin._interceptNavigation = function () {};
+  plugin._detectAndHandleConflicts = function () {};
+  plugin._activateIMT = async function () { return false; };
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  plugin._isEngineLoaded = () => true;
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: "9.8.0",
+      loadedVersion: "9.7.3",
+      latestVersion: "9.8.0",
+      latestState: "available",
+      installPhase: "writing",
+      installError: "",
+      restartRequired: true,
+    };
+  };
+
+  await plugin.onload();
+  const settingTab = addedSettingTabs[0];
+  settingTab.display();
+  const text = collectText(settingTab.containerEl);
+  assert.match(text, /本机已安装 v9\.8\.0/);
+  assert.match(text, /当前已加载 v9\.7\.3/);
+  assert.match(text, /重启后使用磁盘版本/);
+  assert.match(text, /正在写入本机文件/);
+  const busyButton = findElement(settingTab.containerEl, (element) => element.tagName === "BUTTON" && element.textContent === "正在更新…");
+  assert.ok(busyButton);
+  assert.equal(busyButton.disabled, true);
+  plugin.onunload();
+});
+
 test("settings preserve an in-progress safe-config draft while refreshing runtime status", async (t) => {
   setupRuntime();
   const plugin = makePlugin();
@@ -633,7 +624,6 @@ test("settings preserve an in-progress safe-config draft while refreshing runtim
   fs.writeFileSync(path.join(pluginDir, "manifest.json"), JSON.stringify({ id: "immersive-translate-extended", version: "4.0.0" }));
   plugin._getPluginDir = () => pluginDir;
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -668,7 +658,6 @@ test("runtime button is disabled and labeled as current when installed and offic
   let installCalls = 0;
   plugin._installRuntimeFromOfficialSource = async function () { installCalls++; return { ok: true, version: "9.8.0" }; };
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -693,7 +682,6 @@ test("settings cache a failed official version check and leave runtime storage u
   t.after(() => fs.rmSync(pluginDir, { recursive: true, force: true }));
   plugin._getPluginDir = () => pluginDir;
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -725,7 +713,6 @@ test("settings do not label a stale version as current after an official refresh
   const pluginDir = createInstalledRuntimeDirectory(t, "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n");
   plugin._getPluginDir = () => pluginDir;
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
@@ -762,19 +749,18 @@ test("settings do not label a stale version as current after an official refresh
   }
 });
 
-test("settings version check, install, and update each fetch the official runtime", async (t) => {
+test("settings version check and install reuse a fresh official runtime response", async (t) => {
   setupRuntime();
   const plugin = makePlugin();
   const pluginDir = fs.mkdtempSync(path.join(os.tmpdir(), "imt-runtime-settings-flow-"));
   t.after(() => fs.rmSync(pluginDir, { recursive: true, force: true }));
   plugin._getPluginDir = () => pluginDir;
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return true; };
   plugin._startTranslationViewBridge = function () {};
-  const versions = ["9.7.3", "9.7.3", "9.8.0", "9.8.0"];
+  const versions = ["9.7.3", "9.8.0"];
   let requests = 0;
   requestUrlImpl = async function (options) {
     assert.equal(options.url, "https://download.immersivetranslate.com/immersive-translate.user.js");
@@ -794,6 +780,7 @@ test("settings version check, install, and update each fetch the official runtim
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(findElement(settingTab.containerEl, (element) => element.tagName === "BUTTON" && element.textContent === "已是最新版本")?.disabled, true);
+  assert.equal(requests, 1);
   assert.deepEqual(await plugin._checkLatestRuntimeVersion(true), { ok: true, version: "9.8.0" });
   settingTab.display();
   const updateButton = findElement(settingTab.containerEl, (element) => element.tagName === "BUTTON" && element.textContent === "更新运行时");
@@ -801,7 +788,7 @@ test("settings version check, install, and update each fetch the official runtim
   updateButton.dispatchEvent({ type: "click" });
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(requests, 4);
+  assert.equal(requests, 2);
   assert.equal(plugin._getRuntimeStatus().version, "9.8.0");
   plugin.onunload();
 });
@@ -833,7 +820,7 @@ test("a stale plugin instance cannot overwrite a replacement runtime", async (t)
       headers: {},
     };
   };
-  assert.deepEqual(await replacement._installRuntimeFromOfficialSource(), { ok: true, version: "9.8.0" });
+  assert.deepEqual(await replacement._installRuntimeFromOfficialSource(), { ok: true, version: "9.8.0", restartRequired: false });
 
   resolveOldRequest({
     status: 200,
@@ -862,6 +849,29 @@ test("legacy secondary-runtime preferences are discarded in favor of the floatin
   assert.equal(Object.hasOwn(migratedSettings, "targetLanguage"), false);
   assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.targetLanguage, "fr");
   assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.translationMode, "translation");
+});
+
+test("loadSettings drops superseded userscript cache fields from plugin data", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  let persistedSettings = null;
+  plugin.loadData = async function () {
+    return {
+      userscriptCacheVersion: "1.28.5",
+      userscriptCacheEtag: "etag-old",
+      userscriptCacheTime: 1,
+    };
+  };
+  plugin.saveData = async function (settings) { persistedSettings = settings; };
+
+  await plugin.loadSettings();
+
+  assert.equal(Object.hasOwn(plugin.settings, "userscriptCacheVersion"), false);
+  assert.equal(Object.hasOwn(plugin.settings, "userscriptCacheEtag"), false);
+  assert.equal(Object.hasOwn(plugin.settings, "userscriptCacheTime"), false);
+  assert.equal(Object.hasOwn(persistedSettings, "userscriptCacheVersion"), false);
+  assert.equal(Object.hasOwn(persistedSettings, "userscriptCacheEtag"), false);
+  assert.equal(Object.hasOwn(persistedSettings, "userscriptCacheTime"), false);
 });
 
 test("upgraded installations require a fresh conflict choice before changing another plugin", async () => {
@@ -986,23 +996,6 @@ test("userscript background PDF requests stay inside the owned Obsidian BrowserW
   assert.equal(plugin._dashboardWindow, null);
 });
 
-test("gated Dashboard runtime messages report that no embedded window opened", async () => {
-  setupRuntime();
-  const plugin = makePlugin();
-  plugin._isDashboardEmbeddedEnabled = () => false;
-  plugin._installGMPolyfill();
-  plugin._installBrowserAPIPolyfill();
-
-  const optionsResult = await window.immersiveTranslateBrowserAPI.runtime.sendMessage({ method: "openOptionsPage" });
-  const tabResult = await window.immersiveTranslateBrowserAPI.runtime.sendMessage({
-    method: "openInTab",
-    data: { url: "https://dash.immersivetranslate.com/#general" },
-  });
-
-  assert.deepEqual(optionsResult, { success: false, embedded: false });
-  assert.deepEqual(tabResult, { success: false, embedded: false });
-});
-
 test("active Obsidian PDF gets a discoverable action plus PDF and document commands", () => {
   setupRuntime();
   const plugin = makePlugin();
@@ -1114,7 +1107,6 @@ test("the document command opens the unified official workspace with manual sele
 test("production defaults expose the PDF translation action", () => {
   setupRuntime();
   const plugin = makePlugin();
-  delete plugin._isDocumentWorkspaceEnabled;
   const actionEl = makeElement("button");
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
   let action = null;
@@ -1197,7 +1189,7 @@ test("document BrowserWindow is hardened and isolated from Dashboard lifecycle",
   assert.equal(trustedBabelNavigation.prevented, false);
 
   plugin._closeDocumentWorkspace();
-  assert.equal(plugin._documentWorkspaceWindow, null);
+  assert.equal(plugin._documentSession.window(), null);
   assert.equal(plugin._dashboardWindow, dashboardSentinel);
 });
 
@@ -1287,8 +1279,8 @@ test("the PDF runtime is initialized through the preload isolated world", async 
       },
     },
   };
-  plugin._documentWorkspaceWindow = documentWindow;
-  plugin._documentWorkspaceGeneration = 4;
+  plugin._documentSession.begin({ kind: "pdf" });
+  plugin._documentSession.attach(documentWindow);
 
   assert.deepEqual(await plugin._initializeDocumentRuntime(documentWindow), { ok: true, code: "loaded", version: "1.32.7" });
   assert.equal(sent.length, 1);
@@ -1337,8 +1329,8 @@ test("a validated local PDF is handed off once after the official workspace fini
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(handoffCalls, 1);
-  assert.deepEqual(plugin._documentPdfDownloadSource, {
-    generation: plugin._documentWorkspaceGeneration,
+  assert.deepEqual(plugin._documentSession.pdfDownloadSource(), {
+    generation: plugin._documentSession.generation(),
     absolutePath: "/vault/papers/example.pdf",
     fileName: "example.pdf",
   });
@@ -1414,7 +1406,7 @@ test("one approved PDF export reports Blob capture completion and cancellation t
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(responses.at(-1).message.payload.code, "source_unavailable");
-  assert.equal(plugin._pendingDocumentPdfDownload, null);
+  assert.equal(plugin._documentSession.pendingDownload(), null);
 
   eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-00",
@@ -1423,7 +1415,7 @@ test("one approved PDF export reports Blob capture completion and cancellation t
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(responses.at(-1).message.payload.code, "source_unavailable");
-  assert.equal(plugin._pendingDocumentPdfDownload, null);
+  assert.equal(plugin._documentSession.pendingDownload(), null);
 
   eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-1",
@@ -1555,8 +1547,8 @@ test("a main-frame PDF route change schedules one runtime recovery without repea
 
   eventHandlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/pdf/#page=1", true);
   assert.equal(refreshes.length, 1);
-  assert.equal(refreshes[0].window, plugin._documentWorkspaceWindow);
-  assert.equal(refreshes[0].generation, plugin._documentWorkspaceGeneration);
+  assert.equal(refreshes[0].window, plugin._documentSession.window());
+  assert.equal(refreshes[0].generation, plugin._documentSession.generation());
   assert.equal(refreshes[0].delay, 100);
   assert.equal(handoffCalls, 1);
 
@@ -1590,14 +1582,14 @@ test("a reused document window schedules SPA recovery for the current generation
   };
 
   assert.equal(plugin._openDocumentWorkspace({ url: "https://app.immersivetranslate.com/pdf/", spec: { autoHandoff: false } }), true);
-  const createdGeneration = plugin._documentWorkspaceGeneration;
+  const createdGeneration = plugin._documentSession.generation();
   assert.equal(plugin._openDocumentWorkspace({ url: "https://app.immersivetranslate.com/file/", spec: { autoHandoff: false } }), true);
-  assert.ok(plugin._documentWorkspaceGeneration > createdGeneration);
+  assert.ok(plugin._documentSession.generation() > createdGeneration);
 
   eventHandlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/file/#upload", true);
   assert.equal(refreshes.length, 1);
-  assert.equal(refreshes[0].window, plugin._documentWorkspaceWindow);
-  assert.equal(refreshes[0].generation, plugin._documentWorkspaceGeneration);
+  assert.equal(refreshes[0].window, plugin._documentSession.window());
+  assert.equal(refreshes[0].generation, plugin._documentSession.generation());
   assert.equal(refreshes[0].delay, 100);
 
   plugin._closeDocumentWorkspace();
@@ -1670,15 +1662,15 @@ test("a rejected reused-window load clears the pending PDF handoff and reports t
     focus() {},
     loadURL: () => Promise.reject(new Error("navigation failed")),
   };
-  plugin._documentWorkspaceWindow = existingWindow;
+  plugin._documentSession.attach(existingWindow);
   plugin._getBrowserWindow = () => function BrowserWindow() { throw new Error("must reuse"); };
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
 
   assert.equal(plugin._openDocumentTranslationWorkspace(file), true);
-  assert.ok(plugin._documentHandoffRequest);
+  assert.ok(plugin._documentSession.pendingHandoff());
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(plugin._documentHandoffRequest, null);
+  assert.equal(plugin._documentSession.pendingHandoff(), null);
   assert.match(noticeMessages.at(-1), /文档翻译页面加载失败/);
   assert.doesNotMatch(noticeMessages.join(" "), /已打开.*example\.pdf/);
 });
@@ -1727,6 +1719,8 @@ test("reusing the document window serializes PDF handoffs across navigation", as
 
   plugin._openDocumentTranslationWorkspace(second);
   eventHandlers["did-finish-load"]();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, ["first.pdf"]);
 
   finishFirst({ ok: false, code: "cdp_command_failed" });
@@ -1734,6 +1728,77 @@ test("reusing the document window serializes PDF handoffs across navigation", as
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, ["first.pdf", "second.pdf"]);
   assert.match(noticeMessages.at(-1), /second\.pdf/);
+  plugin._closeDocumentWorkspace();
+});
+
+test("closing the document window lets the next PDF claim its own handoff", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const windows = [];
+  function FakeBrowserWindow() {
+    const handlers = {};
+    this.destroyed = false;
+    this.currentUrl = "";
+    this.webContents = {
+      getURL: () => this.currentUrl,
+      setWindowOpenHandler() {},
+      on: (name, handler) => { handlers[name] = handler; },
+      send() {},
+    };
+    this.handlers = handlers;
+    this.loadURL = (url) => { this.currentUrl = url; };
+    this.focus = () => {};
+    this.show = () => {};
+    this.isDestroyed = () => this.destroyed;
+    this.close = () => { this.destroyed = true; if (handlers.closed) handlers.closed(); };
+    this.on = (name, handler) => { handlers[name] = handler; };
+    windows.push(this);
+  }
+  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  plugin._resolveDocumentHandoffFile = (file) => ({
+    ok: true,
+    absolutePath: "/vault/" + file.name,
+    fileName: file.name,
+    extension: "pdf",
+  });
+  let finishFirst;
+  const calls = [];
+  plugin._handoffDocumentFile = async (_window, candidate) => {
+    calls.push(candidate.fileName);
+    if (calls.length === 1) return new Promise((resolve) => { finishFirst = resolve; });
+    return { ok: true, code: "handed_off" };
+  };
+  const first = { path: "first.pdf", name: "first.pdf", extension: "pdf" };
+  const second = { path: "second.pdf", name: "second.pdf", extension: "pdf" };
+  const third = { path: "third.pdf", name: "third.pdf", extension: "pdf" };
+
+  plugin._openDocumentTranslationWorkspace(first);
+  windows[0].handlers["did-finish-load"]();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["first.pdf"]);
+
+  plugin._openDocumentTranslationWorkspace(second);
+  windows[0].handlers["did-finish-load"]();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["first.pdf"]);
+
+  plugin._closeDocumentWorkspace();
+  plugin._openDocumentTranslationWorkspace(third);
+  assert.equal(windows.length, 2);
+  assert.equal(plugin._documentSession.pendingHandoff().file.name, "third.pdf");
+
+  finishFirst({ ok: true, code: "handed_off" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["first.pdf"]);
+
+  windows[1].handlers["did-finish-load"]();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["first.pdf", "third.pdf"]);
+  assert.match(noticeMessages.at(-1), /third\.pdf/);
   plugin._closeDocumentWorkspace();
 });
 
@@ -1815,6 +1880,22 @@ test("a reloaded plugin prepares the host-popout source without reinjecting the 
   assert.equal(refreshes, 1);
 });
 
+test("re-enabling the plugin restores the surviving engine version in GM and browser adapters", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript", userscriptVersion: "9.7.3" };
+  plugin._ensureUserscript = async function () {
+    return "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imt_test_script_ran__ = true;";
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  assert.equal(plugin._loadedUserscriptVersion, "9.7.3");
+  assert.equal(window.GM_info.script.version, "9.7.3");
+  assert.equal(window.GM.info.script.version, "9.7.3");
+  assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest().version, "9.7.3");
+  assert.equal(window.__imt_extend_engine_state__.userscriptVersion, "9.7.3");
+});
+
 test("userscript activation reads the locally installed runtime without a network request", async (t) => {
   setupRuntime();
   const plugin = makePlugin();
@@ -1826,7 +1907,8 @@ test("userscript activation reads the locally installed runtime without a networ
   plugin._activationGeneration = 1;
 
   assert.equal(await plugin._ensureUserscript(1), runtimeSource);
-  assert.equal(plugin._loadedUserscriptVersion, "9.7.3");
+  assert.equal(plugin._loadedUserscriptVersion, "");
+  assert.equal(plugin._installedRuntime.version, "9.7.3");
   assert.equal(requestCount, 0);
 });
 
@@ -1884,7 +1966,33 @@ test("userscript activation accepts an installed script with valid version metad
   plugin._activationGeneration = 1;
 
   assert.equal(await plugin._ensureUserscript(1), runtimeSource);
-  assert.equal(plugin._loadedUserscriptVersion, "9.7.4");
+  assert.equal(plugin._loadedUserscriptVersion, "");
+  assert.equal(plugin._installedRuntime.version, "9.7.4");
+});
+
+test("reading the installed userscript for a document window keeps the main engine version", (t) => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const oldSource = "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtOld = true;\n";
+  const newSource = "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\nwindow.__imtNew = true;\n";
+  const pluginDir = createInstalledRuntimeDirectory(t, oldSource);
+  plugin._getPluginDir = () => pluginDir;
+  plugin._loadedUserscriptVersion = "9.7.3";
+  plugin._markEngineLoaded();
+
+  assert.equal(plugin._getRuntimeStatus().loadedVersion, "9.7.3");
+  assert.equal(plugin._getRuntimeStatus().restartRequired, false);
+
+  fs.writeFileSync(path.join(pluginDir, "userscript.runtime.js"), newSource);
+  plugin._installedRuntime = null;
+
+  assert.equal(plugin._getRuntimeStatus().version, "9.8.0");
+  assert.equal(plugin._getRuntimeStatus().restartRequired, true);
+  assert.equal(plugin._loadInstalledUserscript(), newSource);
+  assert.equal(plugin._loadedUserscriptVersion, "9.7.3");
+  assert.equal(plugin._getRuntimeStatus().loadedVersion, "9.7.3");
+  assert.equal(plugin._getRuntimeStatus().version, "9.8.0");
+  assert.equal(plugin._getRuntimeStatus().restartRequired, true);
 });
 
 test("an obsolete activation generation cannot read the installed runtime", async () => {
@@ -2171,8 +2279,11 @@ test("activates an independent userscript runtime inside an Obsidian host popout
 
   const mainHeadSize = document.head.children.length;
   childWindow.GM_addStyle(".translated { color: green; }");
+  const styleHost = makeElement("div");
+  childWindow.GM.addElement(styleHost, "style", { textContent: ".via-element { color: red; }" });
   assert.equal(document.head.children.length, mainHeadSize);
   assert.equal(childHead.children.at(-1).textContent, ".translated { color: green; }");
+  assert.equal(styleHost.children.at(-1).textContent, ".via-element { color: red; }");
   assert.deepEqual(poked, [childWindow]);
 
   let storageNotifications = 0;
@@ -2188,6 +2299,58 @@ test("activates an independent userscript runtime inside an Obsidian host popout
   assert.equal(childHead.children.length, 0);
   plugin._emitUserscriptStorageChange("listener-probe", 1, 2, false);
   assert.equal(storageNotifications, 2);
+});
+
+test("a window runtime record skips a second GM polyfill after the first install", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin._installGMPolyfill();
+  assert.equal(typeof window.GM_getValue, "function");
+  const record = plugin._windowRuntimeLedger.recordFor(window);
+  assert.equal(record.gmPolyfill, true);
+  delete window.GM;
+  delete window.GM_getValue;
+  plugin._installGMPolyfill();
+  assert.equal(window.GM, undefined);
+  assert.equal(window.GM_getValue, undefined);
+});
+
+test("host popout engine load stays on the window record after the engine state key is cleared", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._hostWindowUserscriptSource = "window.__imt_test_script_ran__ = true;";
+  const childBody = makeElement("body");
+  const childDocument = {
+    body: childBody,
+    head: makeElement("head"),
+    documentElement: makeElement("html"),
+    createElement: makeElement,
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    querySelector() { return null; },
+  };
+  const childWindow = {
+    document: childDocument,
+    localStorage,
+    navigator,
+    Request: globalThis.Request,
+    Response: globalThis.Response,
+    Headers: globalThis.Headers,
+    DOMException: globalThis.DOMException,
+    CustomEvent,
+    location: { href: "about:blank" },
+  };
+  childWindow.self = childWindow;
+  childWindow.window = childWindow;
+
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), true);
+  const scriptsAfterFirst = childBody.children.length;
+  delete childWindow.__imt_extend_engine_state__;
+  assert.equal(plugin._isEngineLoaded(childWindow), true);
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), true);
+  assert.equal(childBody.children.length, scriptsAfterFirst);
 });
 
 test("host popout activation rolls back globals when script injection fails", () => {
@@ -2345,41 +2508,129 @@ test("scope toggles persist host selectors and refresh the active userscript imm
   assert.deepEqual(pushed, stored);
 });
 
-test("userscript mini-config bridge carries live theme and hover-service changes", () => {
+test("interface translation toggle starts and stops host-surface watching", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript" };
-  let received = null;
-  document.dispatchEvent = (event) => { received = JSON.parse(event.detail); return true; };
+  const surfaces = [];
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.saveSettings = async () => true;
+  plugin._persistHostScopeConfig = () => ({ generalRule: {} });
+  plugin._refreshUserscriptRuntime = () => true;
+  plugin._pushConfigToDashboard = () => {};
+  plugin._hostWindowRuntimeManager = {
+    watchHostSurfaces() { surfaces.push("watch"); return true; },
+    unwatchHostSurfaces() { surfaces.push("unwatch"); return true; },
+  };
 
-  assert.equal(plugin._dispatchUserscriptMiniConfig({
+  assert.equal(await plugin._setTranslationScopeSetting("uiTranslateEnabled", false), true);
+  assert.deepEqual(surfaces, ["unwatch"]);
+  assert.equal(await plugin._setTranslationScopeSetting("uiTranslateEnabled", true), true);
+  assert.deepEqual(surfaces, ["unwatch", "watch"]);
+});
+
+test("UI-only translation does not switch the note into reading mode", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.settings.articleTranslateEnabled = false;
+  let mode = "source";
+  const viewStates = [];
+  const view = {
+    getMode: () => mode,
+    containerEl: { isConnected: true },
+    previewMode: { containerEl: { isConnected: true } },
+    leaf: {
+      getViewState: () => ({ state: { mode, source: true } }),
+      setViewState(next) {
+        viewStates.push(next);
+        if (next && next.state && next.state.mode) mode = next.state.mode;
+        return Promise.resolve();
+      },
+    },
+  };
+  plugin.app.workspace = { getActiveViewOfType() { return view; } };
+  document.documentElement = {
+    getAttribute(name) { return name === "imt-state" ? "dual" : ""; },
+  };
+  document.querySelector = () => null;
+  globalThis.MutationObserver = class MutationObserver {
+    observe() {}
+    disconnect() {}
+  };
+
+  assert.equal(plugin._startTranslationViewBridge(), false);
+  assert.equal(plugin._translationViewBridge, null);
+  assert.equal(mode, "source");
+  assert.deepEqual(viewStates, []);
+});
+
+test("article translation starts the reading view bridge and disabling restores owned views", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.settings.articleTranslateEnabled = false;
+  plugin.saveSettings = async () => true;
+  plugin._refreshUserscriptRuntime = () => true;
+  plugin._pushConfigToDashboard = () => Promise.resolve(true);
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  let mode = "source";
+  const view = {
+    getMode: () => mode,
+    containerEl: { isConnected: true },
+    previewMode: { containerEl: { isConnected: true } },
+    leaf: {
+      getViewState: () => ({ state: { mode, source: true } }),
+      setViewState(next) {
+        if (next && next.state && next.state.mode) mode = next.state.mode;
+        return Promise.resolve();
+      },
+    },
+  };
+  plugin.app.workspace = { getActiveViewOfType() { return view; } };
+  document.documentElement = {
+    getAttribute(name) { return name === "imt-state" ? "dual" : ""; },
+  };
+  document.querySelector = () => null;
+  globalThis.MutationObserver = class MutationObserver {
+    observe() {}
+    disconnect() {}
+  };
+
+  assert.equal(await plugin._setTranslationScopeSetting("articleTranslateEnabled", true), true);
+  assert.ok(plugin._translationViewBridge);
+  assert.equal(mode, "preview");
+
+  assert.equal(await plugin._setTranslationScopeSetting("articleTranslateEnabled", false), true);
+  assert.equal(plugin._translationViewBridge, null);
+  assert.equal(mode, "source");
+});
+
+test("userscript mini-config payload carries live theme and hover-service changes", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const data = plugin._buildUserscriptMiniConfigData({
     targetLanguage: "zh-CN",
     translationTheme: "none",
     mouseHoverTranslationService: "microsoft",
-  }), true);
-  assert.equal(received.type, "setMiniConfigAsync");
-  assert.equal(received.data.translationTheme, "none");
-  assert.equal(received.data.mouseHoverTranslationService, "microsoft");
-  assert.equal(received.data.triggerSource, "obsidianHost");
+  });
+  assert.equal(data.translationTheme, "none");
+  assert.equal(data.mouseHoverTranslationService, "microsoft");
+  assert.equal(data.targetLanguage, "zh-CN");
+  assert.equal(data.triggerSource, "obsidianHost");
 });
 
-test("userscript theme bridge uses the upstream live DOM repaint protocol", () => {
+test("userscript theme payload uses the upstream live DOM repaint fields", () => {
   setupRuntime();
   const plugin = makePlugin();
-  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript" };
-  let received = null;
-  document.dispatchEvent = (event) => { received = JSON.parse(event.detail); return true; };
-
-  assert.equal(plugin._dispatchUserscriptThemeConfig({
+  const data = plugin._buildUserscriptThemeConfigData({
     translationTheme: "mask",
     translationThemePatterns: { underline: ["a"] },
     selectTranslationFont: "Noto Sans",
-  }), true);
-  assert.equal(received.type, "updateTranslationThemeConfig");
-  assert.equal(received.data.translationTheme, "mask");
-  assert.deepEqual(received.data.translationThemePatterns, { underline: ["a"] });
-  assert.equal(received.data.selectTranslationFont, "Noto Sans");
-  assert.equal(received.data.triggerSource, "obsidianHost");
+  });
+  assert.equal(data.translationTheme, "mask");
+  assert.deepEqual(data.translationThemePatterns, { underline: ["a"] });
+  assert.equal(data.selectTranslationFont, "Noto Sans");
+  assert.equal(data.triggerSource, "obsidianHost");
 });
 
 test("userscript translation-mode bridge uses the upstream current-page protocol", () => {
@@ -2480,6 +2731,17 @@ test("userscript document requests reject an explicit upstream failure", async (
   };
 
   assert.equal(await plugin._requestUserscriptDocumentMessage("setMiniConfigAsync", { targetLanguage: "ja" }), false);
+});
+
+test("userscript document requests fail closed when Document cannot receive a receipt", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript" };
+  let dispatched = 0;
+  document.dispatchEvent = () => { dispatched++; return true; };
+
+  assert.equal(await plugin._requestUserscriptDocumentMessage("setMiniConfigAsync", { targetLanguage: "ja" }), false);
+  assert.equal(dispatched, 0);
 });
 
 test("runtime refresh sends the previous and next config through the ordered userscript sync", async () => {
@@ -2951,7 +3213,6 @@ test("unload cancels delayed startup callbacks", async () => {
   setupRuntime();
   const plugin = makePlugin();
   plugin.loadSettings = async function () {};
-  plugin._injectStyles = function () {};
   plugin._interceptNavigation = function () {};
   plugin._activateIMT = async function () { throw new Error("activation should not run"); };
   await plugin.onload();
@@ -3300,18 +3561,6 @@ test("Dashboard login fails closed when an embedded window is unavailable", () =
   assert.match(noticeMessages.at(-1), /不会跳转到系统浏览器/);
 });
 
-test("production release keeps Dashboard closed until the isolated bridge is ready", () => {
-  setupRuntime();
-  const plugin = makePlugin();
-  plugin._isDashboardEmbeddedEnabled = () => false;
-  let browserWindowLookups = 0;
-  plugin._getBrowserWindow = () => { browserWindowLookups++; return null; };
-
-  assert.equal(plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general"), false);
-  assert.equal(browserWindowLookups, 0);
-  assert.match(noticeMessages.at(-1), /安全升级/);
-});
-
 test("Dashboard login fails closed when its preload bridge is missing", () => {
   setupRuntime();
   const plugin = makePlugin();
@@ -3511,6 +3760,81 @@ test("dashboard polling refreshes auth even while config sync is busy", () => {
   plugin._autoSyncDashboardStorage();
   assert.equal(cookieSyncs, 1);
   assert.equal(authSyncs, 1);
+});
+
+test("dashboard polling omits configuration already committed over IPC", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  const applied = [];
+  plugin._applySyncData = async (dataStr) => {
+    applied.push(JSON.parse(dataStr));
+    return true;
+  };
+  plugin._syncDashboardAuthState = () => {};
+  plugin._syncCookiesToMain = () => {};
+  plugin._dashboardWindow = {
+    isDestroyed: () => false,
+    webContents: {
+      executeJavaScript: () => Promise.resolve(JSON.stringify({
+        version: 1,
+        values: {
+          "imt-gm-fullLocalUserConfig": JSON.stringify({ targetLanguage: "ja" }),
+          "imt-gm-userInfo": JSON.stringify({ email: "poll@example.com" }),
+        },
+        deletedKeys: ["imt-gm-fullLocalUserConfig"],
+        hash: "stale",
+      })),
+    },
+  };
+
+  plugin._autoSyncDashboardStorage();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].values["imt-gm-fullLocalUserConfig"], undefined);
+  assert.deepEqual(applied[0].deletedKeys, []);
+  assert.deepEqual(JSON.parse(applied[0].values["imt-gm-userInfo"]), { email: "poll@example.com" });
+  assert.equal(applied[0].ackHash, "stale");
+  assert.notEqual(applied[0].hash, "stale");
+});
+
+test("dashboard polling acknowledges the original snapshot hash so the next account snapshot can load", async () => {
+  setupRuntime();
+  localStorage.setItem("imt-gm-authToken", JSON.stringify("sync-token"));
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  const plugin = makePlugin();
+  const dashboard = createDashboardPreloadRuntime();
+  plugin._syncDashboardAuthState = () => {};
+  plugin._syncCookiesToMain = () => {};
+  plugin._notifyUserscriptConfigChange = () => {};
+  plugin._dashboardWindow = {
+    isDestroyed: () => false,
+    webContents: {
+      executeJavaScript(script) { return Promise.resolve(dashboard.__run(script)); },
+    },
+  };
+  dashboard.localStorage.setItem("imt-gm-authToken", JSON.stringify("sync-token"));
+  dashboard.localStorage.setItem("imt-gm-userInfo", JSON.stringify({ email: "member@example.com" }));
+  dashboard.localStorage.setItem("imt-gm-subscriptionInfo", JSON.stringify({ plan: "basic" }));
+  dashboard.localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "ja" }));
+
+  async function pollDashboard() {
+    plugin._autoSyncDashboardStorage();
+    await new Promise((resolve) => setImmediate(resolve));
+    await plugin._syncApplyChain.catch(() => {});
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  await pollDashboard();
+  assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-subscriptionInfo")), { plan: "basic" });
+  assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")), { targetLanguage: "zh-CN" });
+  assert.equal(dashboard.__imt_sync_ack_hash, dashboard.__imt_sync_pending_snapshot.snapshot.hash);
+
+  dashboard.localStorage.setItem("imt-gm-subscriptionInfo", JSON.stringify({ plan: "pro" }));
+  await pollDashboard();
+  assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-subscriptionInfo")), { plan: "pro" });
+  assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")), { targetLanguage: "zh-CN" });
 });
 
 test("normalizes GM request headers and limits cookie forwarding to trusted hosts", async () => {

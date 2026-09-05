@@ -149,7 +149,7 @@ test("document runtime adds one save control and delegates PDF export only after
   const order = [];
   let preparedIdentity = null;
   let capturedBlob = null;
-  let pollDownloadControl = null;
+  let refreshDownloadControl = null;
   let documentClickListener = null;
   const elements = [];
   function makeElement(tagName) {
@@ -264,8 +264,11 @@ test("document runtime adds one save control and delegates PDF export only after
     [DOCUMENT_RUNTIME_BRIDGE_KEY]: bridge,
     document,
     location: { origin: "https://app.immersivetranslate.com" },
-    MutationObserver: class MutationObserver { observe() {} },
-    setInterval(callback) { pollDownloadControl = callback; return 1; },
+    MutationObserver: class MutationObserver {
+      constructor(callback) { refreshDownloadControl = callback; }
+      observe() {}
+      disconnect() {}
+    },
     getComputedStyle() { return { display: "block", visibility: "visible" }; },
     URL,
   });
@@ -286,12 +289,14 @@ test("document runtime adds one save control and delegates PDF export only after
   control.isConnected = false;
   body.children = body.children.filter((element) => element !== control);
   assert.equal(document.getElementById("imt-obsidian-save-translated-pdf"), null);
-  assert.equal(typeof pollDownloadControl, "function");
-  pollDownloadControl();
+  assert.equal(typeof refreshDownloadControl, "function");
+  refreshDownloadControl();
+  await new Promise((resolve) => setTimeout(resolve, 10));
   const restoredControl = document.getElementById("imt-obsidian-save-translated-pdf");
   assert.ok(restoredControl);
   assert.notEqual(restoredControl, control);
-  pollDownloadControl();
+  refreshDownloadControl();
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(elements.filter((element) => element.id === control.id && element.isConnected).length, 1);
 });
 
@@ -317,7 +322,7 @@ test("document runtime routes GM and browser storage through the isolated bridge
       "  await immersiveTranslateBrowserAPI.storage.local.set({ browserValue: 7 });",
       "  var selected = await immersiveTranslateBrowserAPI.storage.local.get(['retained', 'created', 'browserValue']);",
       "  await immersiveTranslateBrowserAPI.storage.local.remove('browserValue');",
-      "  return { selected: selected, keys: GM_listValues().sort(), missing: GM_getValue('missing', 'fallback'), listenerEvents: listenerEvents, hasStyleApi: typeof GM_addStyle === 'function', hasOpenApi: typeof GM_openInTab === 'function' };",
+      "  return { selected: selected, keys: GM_listValues().sort(), missing: GM_getValue('missing', 'fallback'), listenerEvents: listenerEvents, hasStyleApi: typeof GM_addStyle === 'function', hasOpenApi: typeof GM_openInTab === 'function', hasAddElementApi: typeof GM_addElement === 'function' };",
       "})();",
     ].join("\n"),
     userscriptVersion: "1.2.3",
@@ -337,7 +342,52 @@ test("document runtime routes GM and browser storage through the isolated bridge
     listenerEvents: [["created", 2, 3]],
     hasStyleApi: true,
     hasOpenApi: true,
+    hasAddElementApi: true,
   });
+});
+
+test("document runtime injects userscript styles through GM.addElement", async () => {
+  function createElement(tagName) {
+    return {
+      tagName: String(tagName || "div").toUpperCase(),
+      children: [],
+      parentNode: null,
+      textContent: "",
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
+    };
+  }
+  const head = createElement("head");
+  const body = createElement("body");
+  const document = {
+    head,
+    body,
+    documentElement: body,
+    createElement,
+  };
+  const bridge = {
+    async waitForInit() { return { trusted: true }; },
+    getValue(_key, fallback) { return fallback; },
+    setValue() {},
+    deleteValue() {},
+    listValues() { return []; },
+    async request() { throw new Error("not used"); },
+  };
+  const source = createDocumentRuntimeBootstrap({
+    userscriptSource: [
+      "var parent = document.createElement('div');",
+      "document.body.appendChild(parent);",
+      "GM.addElement(parent, 'style', { textContent: '.doc { color: teal; }' });",
+      "globalThis.__addElementProbe = parent.children[0] && parent.children[0].textContent;",
+    ].join("\n"),
+    userscriptVersion: "1.2.3",
+    defaultTargetLanguage: "zh-CN",
+  });
+
+  const execution = runBootstrap(source, { [DOCUMENT_RUNTIME_BRIDGE_KEY]: bridge, document: document });
+  const result = await execution.result;
+
+  assert.equal(result.ok, true);
+  assert.equal(execution.context.__addElementProbe, ".doc { color: teal; }");
 });
 
 test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch", async () => {

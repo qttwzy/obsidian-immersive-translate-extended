@@ -1,6 +1,6 @@
 "use strict";
 
-const ACTIVE_TRANSLATION_STATES = new Set(["dual", "translation"]);
+const { isActiveTranslationState, readActiveTranslationState } = require("./translation-state");
 
 function createTranslationViewBridge(options = {}) {
   const document = options.document;
@@ -27,14 +27,7 @@ function createTranslationViewBridge(options = {}) {
   const ownedViews = new Map();
 
   function translationState() {
-    const explicit = String(document.documentElement.getAttribute("imt-state") || "").trim();
-    if (ACTIVE_TRANSLATION_STATES.has(explicit)) return explicit;
-    if (explicit) return explicit;
-    try {
-      const popup = document.querySelector("#immersive-translate-popup");
-      if (popup && popup.shadowRoot && popup.shadowRoot.querySelector(".imt-fb-btn.active")) return "dual";
-    } catch (error) {}
-    return "";
+    return readActiveTranslationState(document);
   }
 
   function activeMarkdownView() {
@@ -66,7 +59,7 @@ function createTranslationViewBridge(options = {}) {
       record.replayPending = false;
       if (!started || expectedGeneration !== generation || ownedViews.get(view) !== record) return;
       const currentState = translationState();
-      if (!ACTIVE_TRANSLATION_STATES.has(currentState)) return;
+      if (!isActiveTranslationState(currentState)) return;
       if (currentState !== state) {
         record.state = currentState;
         record.replayed = false;
@@ -113,7 +106,7 @@ function createTranslationViewBridge(options = {}) {
   function reconcile() {
     if (!started) return false;
     const state = translationState();
-    if (!ACTIVE_TRANSLATION_STATES.has(state)) {
+    if (!isActiveTranslationState(state)) {
       restoreOwnedViews();
       return false;
     }

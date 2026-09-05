@@ -41,6 +41,8 @@ function createPackageFixture(t) {
   fs.writeFileSync(path.join(pluginDir, "dashboard-preload.js"), 'var BRIDGE_VERSION = "4.0.0";\n');
   fs.writeFileSync(path.join(pluginDir, "document-preload.js"), 'require("./document-runtime");\n');
   fs.writeFileSync(path.join(pluginDir, "document-runtime.js"), '"use strict";\n');
+  fs.writeFileSync(path.join(pluginDir, "gm-element.js"), '"use strict";\n');
+  fs.writeFileSync(path.join(pluginDir, "gm-headers.js"), '"use strict";\n');
   fs.writeFileSync(path.join(projectRoot, "LICENSE"), "Fixture license\n");
   fs.writeFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "# Third-party notices\n");
 
@@ -70,6 +72,8 @@ test("package command builds exactly one complete plugin ZIP", (t) => {
     "immersive-translate-extended/dashboard-preload.js",
     "immersive-translate-extended/document-preload.js",
     "immersive-translate-extended/document-runtime.js",
+    "immersive-translate-extended/gm-element.js",
+    "immersive-translate-extended/gm-headers.js",
     "immersive-translate-extended/main.js",
     "immersive-translate-extended/manifest.json",
     "immersive-translate-extended/styles.css",

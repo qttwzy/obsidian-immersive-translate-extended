@@ -20,3 +20,13 @@
 #imt-conflict-notice h4{margin:0 0 6px;color:var(--text-error)}
 #imt-conflict-notice p{margin:4px 0;line-height:1.5}
 #imt-conflict-notice button{margin-top:8px;padding:4px 12px;border-radius:4px;border:1px solid var(--background-modifier-border);background-color:var(--interactive-accent);color:var(--text-on-accent);cursor:pointer;font-size:12px}
+.imt-provider-login-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+.imt-settings-import{display:flex;flex-direction:column;gap:8px;margin:8px 0 18px}
+.imt-settings-import textarea{width:100%;min-height:112px;padding:8px;border:1px solid var(--background-modifier-border);border-radius:4px;background-color:var(--background-modifier-form-field);color:var(--text-normal);font:12px var(--font-monospace);resize:vertical}
+.imt-settings-import-actions{display:flex;justify-content:flex-end;gap:8px}
+.imt-account-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:12px;background-color:var(--background-primary)}
+.imt-account-avatar{width:32px;height:32px;border-radius:50%;background-color:var(--background-modifier-border);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-muted)}
+.imt-account-info{flex:1}
+.imt-account-name{font-size:13px;font-weight:500;color:var(--text-normal)}
+.imt-account-status{font-size:11px;color:var(--text-muted)}
+.imt-account-check{color:#22c55e;font-size:16px;font-weight:bold}

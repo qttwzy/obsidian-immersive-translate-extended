@@ -173,7 +173,7 @@ test("Dashboard sync controls recover after an SPA render removes them", async (
   assert.equal(runtime.document.getElementById("imt-obsidian-bridge"), null);
 
   assert.equal(typeof runtime.__imt_ensure_sync_ui, "function");
-  runtime.__runIntervals();
+  runtime.__imt_ensure_sync_ui();
 
   assert.ok(runtime.document.getElementById("imt-obsidian-bridge"));
   assert.match(runtime.document.getElementById("imt-auth-status").textContent, /已登录.*自动同步/);
@@ -630,6 +630,19 @@ test("runtime bridge rejects unsupported messages and opens only HTTP login URLs
   assert.deepEqual(opened, [{ url: "https://immersivetranslate.com/accounts/login", target: "_blank" }]);
   assert.equal(runtime.GM_openInTab("javascript:alert(1)"), null);
   assert.equal(opened.length, 1);
+});
+
+test("runtime GM.addElement injects a style node into the given parent", () => {
+  const runtime = createRuntime();
+  const parent = runtime.document.createElement("div");
+  runtime.document.body.appendChild(parent);
+  const style = runtime.GM.addElement(parent, "style", { textContent: ".dash { color: navy; }" });
+  assert.equal(style.textContent, ".dash { color: navy; }");
+  assert.equal(parent.children.at(-1), style);
+  const labeled = runtime.GM.addElement(parent, "div", { innerHTML: "<img src=x>", textContent: "ok", className: "probe" });
+  assert.equal(labeled.textContent, "ok");
+  assert.equal(labeled.className, "probe");
+  assert.equal(labeled.innerHTML, undefined);
 });
 
 test("runtime bridge stores and returns a bounded redacted full user config", async () => {

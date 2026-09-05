@@ -165,6 +165,15 @@ test("a stale active floating ball falls back to bilingual replay after plugin r
   assert.deepEqual(harness.switchCalls, ["dual"]);
 });
 
+test("an explicit original state does not use the floating-ball fallback", async () => {
+  const harness = createHarness({ state: "original", ballActive: true });
+  harness.bridge.start();
+  await harness.flush();
+
+  assert.equal(harness.content.mode, "source");
+  assert.deepEqual(harness.switchCalls, []);
+});
+
 test("reading-mode replay waits until the translation state API is available", async () => {
   const harness = createHarness({ state: "dual", switchAvailable: false });
   harness.bridge.start();

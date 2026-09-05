@@ -25,17 +25,23 @@ test("active bridges distinguish the plugin version from the loaded userscript v
   const entry = fs.readFileSync(path.join(ROOT, "plugin", "main.entry.js"), "utf8");
   const preload = fs.readFileSync(path.join(ROOT, "plugin", "dashboard-preload.js"), "utf8");
 
-  assert.match(entry, /_extractUserscriptVersion/);
+  assert.match(entry, /extractRuntimeVersion/);
   assert.match(entry, /_imtUserscriptVersion/);
   assert.match(entry, /_imtBridgeVersion: PLUGIN_VERSION/);
   assert.match(preload, new RegExp("BRIDGE_VERSION = \\\"" + packageJson.version.replace(/\\./g, "\\\\.") + "\\\""));
+  const dashboardEntry = fs.readFileSync(path.join(ROOT, "plugin", "dashboard-preload.entry.js"), "utf8");
+  assert.match(dashboardEntry, /require\(\"\.\/sync-protocol\"\)/);
+  assert.match(dashboardEntry, /require\(\"\.\/gm-element\"\)/);
+  assert.doesNotMatch(preload, /require\(\"\.\/sync-protocol\"\)/);
+  assert.doesNotMatch(preload, /require\(\"\.\/gm-element\"\)/);
+  assert.match(preload, /\$1_\$2/);
 });
 
 test("Obsidian release entry embeds local runtime modules", () => {
   const main = fs.readFileSync(path.join(ROOT, "plugin", "main.js"), "utf8");
 
   assert.match(main, /__imtFactories/);
-  assert.doesNotMatch(main, /require\(\"\.\/(?:auth-session-adapter|dashboard-pkce-host|document-runtime|document-workspace|runtime-contract|runtime-installer)\"\)/);
+  assert.doesNotMatch(main, /require\(\"\.\/(?:auth-session-adapter|dashboard-pkce-host|document-runtime|document-session|document-workspace|gm-element|gm-headers|runtime-contract|runtime-installer|sync-protocol|translation-state)\"\)/);
 });
 
 test("runtime installation is user initiated from the official source", () => {

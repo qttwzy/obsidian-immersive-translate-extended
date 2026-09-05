@@ -1,5 +1,8 @@
 "use strict";
 
+const { createGmElementApi } = require("./gm-element");
+const { createGmHeaders } = require("./gm-headers");
+
 const DOCUMENT_RUNTIME_WORLD_ID = 1001;
 const DOCUMENT_RUNTIME_BRIDGE_KEY = "__imtDocumentRuntimeBridge";
 const DOCUMENT_RUNTIME_INIT_CHANNEL = "imt-document-runtime:init";
@@ -63,7 +66,6 @@ function runDocumentRuntimeBootstrap(options) {
     if (!initState || initState.trusted !== true) return { ok: false, code: "untrusted_document" };
 
     let downloadControlObserver = null;
-    let downloadControlPollTimer = null;
     let downloadStatusSubscribed = false;
     let downloadControlRefreshPending = false;
     let downloadControlResetTimer = null;
@@ -336,12 +338,7 @@ function runDocumentRuntimeBootstrap(options) {
             ensurePdfDownloadControl();
           }, 0);
         });
-        downloadControlObserver.observe(documentObject.documentElement, { childList: true, subtree: true });
-      }
-      if (!downloadControlPollTimer && typeof globalThis.setInterval === "function") {
-        downloadControlPollTimer = globalThis.setInterval(function () {
-          ensurePdfDownloadControl();
-        }, 1000);
+        downloadControlObserver.observe(documentObject.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "aria-disabled", "class", "hidden"] });
       }
       return control;
     };
@@ -397,33 +394,11 @@ function runDocumentRuntimeBootstrap(options) {
       return id;
     };
     const gmRemoveValueChangeListener = function (id) { return delete valueListeners[id]; };
-    const headersToObject = function (input) {
-      const result = {};
-      if (!input) return result;
-      if (typeof input.forEach === "function") {
-        input.forEach(function (value, key) { result[String(key)] = String(value); });
-        return result;
-      }
-      if (Array.isArray(input)) {
-        input.forEach(function (entry) {
-          if (entry && entry.length >= 2) result[String(entry[0])] = String(entry[1]);
-        });
-        return result;
-      }
-      if (typeof input === "object") {
-        Object.keys(input).forEach(function (key) {
-          if (input[key] !== undefined && input[key] !== null) result[key] = String(input[key]);
-        });
-      }
-      return result;
-    };
-    const hasHeader = function (headers, name) {
-      const target = String(name).toLowerCase();
-      return Object.keys(headers || {}).some(function (key) { return key.toLowerCase() === target; });
-    };
-    const responseHeadersToString = function (headers) {
-      return Object.keys(headers || {}).map(function (key) { return key + ": " + headers[key]; }).join("\r\n");
-    };
+    const gmHeaders = createGmHeaders();
+    const headersToObject = gmHeaders.headersToObject;
+    const hasHeader = gmHeaders.hasHeader;
+    const getResponseHeader = gmHeaders.getResponseHeader;
+    const responseHeadersToString = gmHeaders.responseHeadersToString;
     const bytesToBase64 = function (bytes) {
       let binary = "";
       const chunkSize = 0x8000;
@@ -469,14 +444,13 @@ function runDocumentRuntimeBootstrap(options) {
       }
       if (type === "blob") {
         const bytes = bridgeResponseBytes(response);
-        const contentTypeKey = Object.keys(response.headers || {}).find(function (key) { return key.toLowerCase() === "content-type"; });
+        const contentType = getResponseHeader(response.headers, "content-type") || "application/octet-stream";
         return typeof Blob === "function"
-          ? new Blob([bytes], { type: contentTypeKey ? response.headers[contentTypeKey] : "application/octet-stream" })
+          ? new Blob([bytes], { type: contentType })
           : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }
       if (type === "document" && typeof DOMParser === "function") {
-        const contentTypeKey = Object.keys(response.headers || {}).find(function (key) { return key.toLowerCase() === "content-type"; });
-        const mime = contentTypeKey && String(response.headers[contentTypeKey]).toLowerCase().indexOf("html") >= 0
+        const mime = String(getResponseHeader(response.headers, "content-type")).toLowerCase().indexOf("html") >= 0
           ? "text/html"
           : "application/xml";
         return new DOMParser().parseFromString(text, mime);
@@ -623,20 +597,16 @@ function runDocumentRuntimeBootstrap(options) {
     globalThis.GM_xmlHttpRequest = gmXmlHttpRequest;
     globalThis.GM_fetch = gmFetch;
     globalThis.GM_info = gmInfo;
-    globalThis.GM_addStyle = function (cssText) {
-      if (!globalThis.document || typeof globalThis.document.createElement !== "function") return null;
-      const style = globalThis.document.createElement("style");
-      style.textContent = String(cssText || "");
-      const parent = globalThis.document.head || globalThis.document.documentElement;
-      if (parent && typeof parent.appendChild === "function") parent.appendChild(style);
-      return style;
-    };
+    const gmElementApi = createGmElementApi(function () { return globalThis.document; });
+    const gmAddElement = gmElementApi.addElement;
+    const gmAddStyle = gmElementApi.addStyle;
+    globalThis.GM_addStyle = gmAddStyle;
     globalThis.GM_openInTab = function (url) {
       if (typeof globalThis.open === "function") return globalThis.open(String(url || ""), "_blank");
       return null;
     };
     globalThis.GM_registerMenuCommand = function () { return 0; };
-    globalThis.GM_addElement = function () { return null; };
+    globalThis.GM_addElement = gmAddElement;
     globalThis.GM = {
       info: gmInfo,
       getValue: gmGetValue,
@@ -754,7 +724,7 @@ function createDocumentRuntimeBootstrap(options) {
   const executableBootstrap = bootstrapSource.replace(marker, function () {
     return "\n" + userscriptSource + "\n";
   });
-  return "(" + executableBootstrap + ")(" + JSON.stringify(payload) + ")";
+  return "(function(createGmElementApi, createGmHeaders){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + ")";
 }
 
 module.exports = {

@@ -514,10 +514,157 @@ module.exports = {
 
 };
 
+__imtFactories["sync-protocol"] = function (module, exports, require) {
+"use strict";
+
+const GM_STORE_PREFIX = "imt-gm-";
+const SYNC_MAX_KEYS = 512;
+const SYNC_MAX_VALUE_BYTES = 512 * 1024;
+const SYNC_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
+const CONFIG_MAX_NODES = 16 * 1024;
+const CONFIG_MAX_ARRAY_ITEMS = 4 * 1024;
+const SYNC_SCOPE_PORTABLE = "portable-config";
+const SYNC_SCOPE_DASHBOARD = "dashboard-account-services";
+
+function isSensitiveSyncKey(key) {
+  const normalized = String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  const mouseHoverControlKey = /^mouse_hover(?:_[a-z0-9]+)*_key$/.test(normalized)
+    && !/(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key/.test(normalized);
+  if (mouseHoverControlKey || normalized === "hotkey") return false;
+  return /(?:^|_)(?:auth|bearer|oauth|session)(?:_|$)/.test(normalized) || /(?:token|secret|password|passwd|authorization|cookie|jwt|credential|(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key|(?:^|[_-])key$|refresh[_-]?token)/.test(normalized);
+}
+
+function isUnsafeSyncProperty(key) {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+function isAllowedTopKey(key, allowedTopKeys) {
+  return !!(allowedTopKeys && Object.prototype.hasOwnProperty.call(allowedTopKeys, key));
+}
+
+function redactSyncValue(value, depth, budget) {
+  if (budget) {
+    if (budget.remaining <= 0) { budget.exceeded = true; return null; }
+    budget.remaining--;
+  }
+  if (depth > 8) return null;
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    if (budget && value.length > CONFIG_MAX_ARRAY_ITEMS) { budget.exceeded = true; return null; }
+    const items = [];
+    for (let itemIndex = 0; itemIndex < value.length; itemIndex++) {
+      items.push(redactSyncValue(value[itemIndex], depth + 1, budget));
+      if (budget && budget.exceeded) break;
+    }
+    return items;
+  }
+  if (typeof value !== "object") return value;
+  const result = {};
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key) || isUnsafeSyncProperty(key) || isSensitiveSyncKey(key)) continue;
+    result[key] = redactSyncValue(value[key], depth + 1, budget);
+    if (budget && budget.exceeded) break;
+  }
+  return result;
+}
+
+function sanitizeFullLocalUserConfig(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const budget = { remaining: CONFIG_MAX_NODES, exceeded: false };
+  const safeConfig = redactSyncValue(value, 0, budget);
+  if (budget.exceeded) return null;
+  let serialized;
+  try { serialized = JSON.stringify(safeConfig); } catch (error) { return null; }
+  if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
+  return safeConfig;
+}
+
+function canonicalSyncSuffix(suffix) {
+  if (suffix === "user_info") return "userInfo";
+  if (suffix === "memberConfig") return "fullLocalUserConfig";
+  if (suffix === "serviceConfig" || suffix === "translatorConfig") return "translateServiceConfig";
+  return suffix;
+}
+
+function orderedSyncValues(values) {
+  const ordered = {};
+  Object.keys(values || {}).sort().forEach(function (key) { ordered[key] = values[key]; });
+  return ordered;
+}
+
+function hashSyncPayload(values, deletedKeys) {
+  const input = JSON.stringify({ values: orderedSyncValues(values), deletedKeys: (deletedKeys || []).slice().sort() });
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index++) { hash ^= input.charCodeAt(index); hash = Math.imul(hash, 16777619); }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function normalizeSyncKey(key, allowedTopKeys, storePrefix) {
+  const prefix = typeof storePrefix === "string" && storePrefix ? storePrefix : GM_STORE_PREFIX;
+  if (typeof key !== "string" || key.length > 256) return null;
+  if (key.indexOf(prefix) === 0) {
+    const suffix = canonicalSyncSuffix(key.slice(prefix.length));
+    if (!suffix || suffix.indexOf("__") === 0 || isSensitiveSyncKey(suffix) || !isAllowedTopKey(suffix, allowedTopKeys)) return null;
+    return prefix + suffix;
+  }
+  if (!isAllowedTopKey(key, allowedTopKeys) || isSensitiveSyncKey(key)) return null;
+  return prefix + canonicalSyncSuffix(key);
+}
+
+module.exports = {
+  CONFIG_MAX_ARRAY_ITEMS,
+  CONFIG_MAX_NODES,
+  GM_STORE_PREFIX,
+  SYNC_MAX_KEYS,
+  SYNC_MAX_TOTAL_BYTES,
+  SYNC_MAX_VALUE_BYTES,
+  SYNC_SCOPE_DASHBOARD,
+  SYNC_SCOPE_PORTABLE,
+  canonicalSyncSuffix,
+  hashSyncPayload,
+  isSensitiveSyncKey,
+  isUnsafeSyncProperty,
+  normalizeSyncKey,
+  orderedSyncValues,
+  redactSyncValue,
+  sanitizeFullLocalUserConfig,
+};
+
+};
+
+__imtFactories["translation-state"] = function (module, exports, require) {
+"use strict";
+
+const ACTIVE_TRANSLATION_STATES = { dual: true, translation: true };
+
+function isActiveTranslationState(state) {
+  return state === "dual" || state === "translation";
+}
+
+function readActiveTranslationState(runtimeDocument) {
+  if (!runtimeDocument) return "";
+  try {
+    const explicit = String(runtimeDocument.documentElement && runtimeDocument.documentElement.getAttribute("imt-state") || "").trim();
+    if (isActiveTranslationState(explicit)) return explicit;
+    if (explicit) return "";
+    const popup = runtimeDocument.querySelector && runtimeDocument.querySelector("#immersive-translate-popup");
+    if (popup && popup.shadowRoot && popup.shadowRoot.querySelector(".imt-fb-btn.active")) return "dual";
+  } catch (error) {}
+  return "";
+}
+
+module.exports = {
+  ACTIVE_TRANSLATION_STATES,
+  isActiveTranslationState,
+  readActiveTranslationState,
+};
+
+};
+
 __imtFactories["translation-view-bridge"] = function (module, exports, require) {
 "use strict";
 
-const ACTIVE_TRANSLATION_STATES = new Set(["dual", "translation"]);
+const { isActiveTranslationState, readActiveTranslationState } = __imtRequire("translation-state");
 
 function createTranslationViewBridge(options = {}) {
   const document = options.document;
@@ -544,14 +691,7 @@ function createTranslationViewBridge(options = {}) {
   const ownedViews = new Map();
 
   function translationState() {
-    const explicit = String(document.documentElement.getAttribute("imt-state") || "").trim();
-    if (ACTIVE_TRANSLATION_STATES.has(explicit)) return explicit;
-    if (explicit) return explicit;
-    try {
-      const popup = document.querySelector("#immersive-translate-popup");
-      if (popup && popup.shadowRoot && popup.shadowRoot.querySelector(".imt-fb-btn.active")) return "dual";
-    } catch (error) {}
-    return "";
+    return readActiveTranslationState(document);
   }
 
   function activeMarkdownView() {
@@ -583,7 +723,7 @@ function createTranslationViewBridge(options = {}) {
       record.replayPending = false;
       if (!started || expectedGeneration !== generation || ownedViews.get(view) !== record) return;
       const currentState = translationState();
-      if (!ACTIVE_TRANSLATION_STATES.has(currentState)) return;
+      if (!isActiveTranslationState(currentState)) return;
       if (currentState !== state) {
         record.state = currentState;
         record.replayed = false;
@@ -630,7 +770,7 @@ function createTranslationViewBridge(options = {}) {
   function reconcile() {
     if (!started) return false;
     const state = translationState();
-    if (!ACTIVE_TRANSLATION_STATES.has(state)) {
+    if (!isActiveTranslationState(state)) {
       restoreOwnedViews();
       return false;
     }
@@ -709,17 +849,108 @@ module.exports = { createTranslationViewBridge };
 __imtFactories["host-window-runtime"] = function (module, exports, require) {
 "use strict";
 
-function createHostWindowRuntimeManager(options = {}) {
-  const isHostWindow = options.isHostWindow;
-  const activate = options.activate;
-  const deactivate = typeof options.deactivate === "function" ? options.deactivate : function () {};
+function createWindowRuntimeRecord(win) {
+  return {
+    win,
+    active: false,
+    observer: null,
+    closed: false,
+    onUnload: null,
+    gmPolyfill: false,
+    browserPolyfill: false,
+    gmFetchPolyfill: false,
+    engineLoaded: false,
+    userscriptVersion: "",
+  };
+}
+
+function createWindowRuntimeLedger() {
   const records = [];
 
-  if (typeof isHostWindow !== "function") throw new TypeError("isHostWindow is required");
+  function recordFor(win) {
+    if (!win) return null;
+    return records.find((record) => record.win === win) || null;
+  }
+
+  function ensure(win) {
+    if (!win) return null;
+    let record = recordFor(win);
+    if (record) return record;
+    record = createWindowRuntimeRecord(win);
+    records.push(record);
+    return record;
+  }
+
+  function remove(win) {
+    const record = recordFor(win);
+    if (!record) return false;
+    records.splice(records.indexOf(record), 1);
+    return true;
+  }
+
+  function resetPolyfills(win) {
+    const record = recordFor(win);
+    if (!record) return false;
+    record.gmPolyfill = false;
+    record.browserPolyfill = false;
+    record.gmFetchPolyfill = false;
+    return true;
+  }
+
+  function resetAllPolyfills() {
+    records.forEach((record) => {
+      record.gmPolyfill = false;
+      record.browserPolyfill = false;
+      record.gmFetchPolyfill = false;
+    });
+  }
+
+  return { recordFor, ensure, remove, resetPolyfills, resetAllPolyfills };
+}
+
+const HOST_SURFACE_CLASS_NAMES = [
+  "modal-container", "modal", "mod-settings", "mod-community-plugin", "mod-community-theme",
+  "menu", "popover", "tooltip", "prompt", "community-item", "vertical-tab-header",
+];
+
+function isHostPopoutWindow(runtimeWindow) {
+  try {
+    const runtimeDocument = runtimeWindow && runtimeWindow.document;
+    const body = runtimeDocument && runtimeDocument.body;
+    if (!body) return false;
+    if (body.classList && body.classList.contains("is-popout-modal")) return true;
+    return !!(runtimeDocument.querySelector && runtimeDocument.querySelector(".mod-settings, .mod-community-plugin, .mod-community-theme"));
+  } catch (error) {
+    return false;
+  }
+}
+
+function isHostSurfaceNode(node, root) {
+  let current = node;
+  while (current && current.nodeType === 1 && current !== root) {
+    if (current.classList) {
+      for (let i = 0; i < HOST_SURFACE_CLASS_NAMES.length; i++) {
+        if (current.classList.contains(HOST_SURFACE_CLASS_NAMES[i])) return true;
+      }
+    }
+    current = current.parentNode;
+  }
+  return false;
+}
+
+function createHostWindowRuntimeManager(options = {}) {
+  const isHostWindow = typeof options.isHostWindow === "function" ? options.isHostWindow : isHostPopoutWindow;
+  const activate = options.activate;
+  const deactivate = typeof options.deactivate === "function" ? options.deactivate : function () {};
+  const ledger = options.ledger || createWindowRuntimeLedger();
+  const tracked = [];
+  let translationState = null;
+  let hostSurface = null;
+
   if (typeof activate !== "function") throw new TypeError("activate is required");
 
   function findRecord(win) {
-    return records.find((record) => record.win === win) || null;
+    return ledger.recordFor(win);
   }
 
   function cleanup(record) {
@@ -728,12 +959,15 @@ function createHostWindowRuntimeManager(options = {}) {
     if (record.observer) record.observer.disconnect();
     record.observer = null;
     try { record.win.removeEventListener("unload", record.onUnload); } catch (error) {}
+    record.onUnload = null;
     if (record.active) {
       record.active = false;
       try { deactivate(record.win); } catch (error) {}
     }
-    const index = records.indexOf(record);
-    if (index >= 0) records.splice(index, 1);
+    const index = tracked.indexOf(record);
+    if (index >= 0) tracked.splice(index, 1);
+    ledger.resetPolyfills(record.win);
+    ledger.remove(record.win);
   }
 
   function inspect(record) {
@@ -752,42 +986,543 @@ function createHostWindowRuntimeManager(options = {}) {
 
   function track(win) {
     if (!win || typeof win !== "object") return false;
-    if (findRecord(win)) return true;
-    const record = { win, active: false, observer: null, closed: false, onUnload: null };
-    record.onUnload = () => cleanup(record);
-    records.push(record);
-    try { win.addEventListener("unload", record.onUnload, { once: true }); } catch (error) {}
-    try {
-      const Observer = win.MutationObserver;
-      const doc = win.document;
-      if (typeof Observer === "function" && doc && doc.documentElement) {
-        record.observer = new Observer(() => inspect(record));
-        record.observer.observe(doc.documentElement, { childList: true, subtree: true, attributes: true });
-      }
-    } catch (error) {}
+    let record = findRecord(win);
+    if (record && tracked.indexOf(record) >= 0) return true;
+    record = ledger.ensure(win);
+    if (tracked.indexOf(record) < 0) tracked.push(record);
+    record.closed = false;
+    if (!record.onUnload) {
+      record.onUnload = () => cleanup(record);
+      try { win.addEventListener("unload", record.onUnload, { once: true }); } catch (error) {}
+      try {
+        const Observer = win.MutationObserver;
+        const doc = win.document;
+        if (typeof Observer === "function" && doc && doc.documentElement) {
+          record.observer = new Observer(() => inspect(record));
+          record.observer.observe(doc.documentElement, { childList: true, subtree: true, attributes: true });
+        }
+      } catch (error) {}
+    }
     inspect(record);
     return true;
   }
 
   function refresh() {
-    records.slice().forEach(inspect);
+    tracked.slice().forEach(inspect);
   }
 
   function forEachActive(callback) {
     if (typeof callback !== "function") return;
-    records.slice().forEach((record) => {
+    tracked.slice().forEach((record) => {
       if (record.active) callback(record.win);
     });
   }
 
-  function stop() {
-    records.slice().forEach(cleanup);
+  function mutationObserver(hooks, doc) {
+    const input = hooks && typeof hooks === "object" ? hooks : {};
+    const Observer = input.MutationObserver || (typeof MutationObserver === "function" ? MutationObserver : null);
+    if (!doc || typeof Observer !== "function") return null;
+    return { input, Observer };
   }
 
-  return { track, refresh, forEachActive, stop };
+  function disconnectWatch(watch) {
+    if (!watch) return false;
+    if (watch.pokeTimer && typeof watch.clearTimeout === "function") {
+      watch.clearTimeout(watch.pokeTimer);
+    }
+    if (watch.observer) {
+      try { watch.observer.disconnect(); } catch (error) {}
+    }
+    return true;
+  }
+
+  function unwatchTranslationState() {
+    if (!disconnectWatch(translationState)) return false;
+    translationState = null;
+    return true;
+  }
+
+  function watchTranslationState(hooks) {
+    if (translationState) return false;
+    const setup = mutationObserver(hooks, hooks && hooks.document);
+    const doc = setup && setup.input.document;
+    if (!setup || !doc || !doc.documentElement) return false;
+    const observer = new setup.Observer(function (mutations) {
+      if (!translationState) return;
+      for (let i = 0; i < mutations.length; i++) {
+        if (mutations[i].type === "attributes" && mutations[i].target === doc.documentElement && mutations[i].attributeName === "imt-state") {
+          if (typeof setup.input.onStateChange === "function") setup.input.onStateChange();
+          return;
+        }
+      }
+    });
+    try {
+      observer.observe(doc.documentElement, { attributes: true, attributeFilter: ["imt-state"] });
+    } catch (error) {
+      return false;
+    }
+    translationState = { observer };
+    return true;
+  }
+
+  function unwatchHostSurfaces() {
+    if (!disconnectWatch(hostSurface)) return false;
+    hostSurface = null;
+    return true;
+  }
+
+  function watchHostSurfaces(hooks) {
+    if (hostSurface) return false;
+    const setup = mutationObserver(hooks, hooks && hooks.document);
+    const doc = setup && setup.input.document;
+    if (!setup || !doc || !doc.body) return false;
+    const setTimeoutFn = typeof setup.input.setTimeout === "function" ? setup.input.setTimeout : setTimeout;
+    const clearTimeoutFn = typeof setup.input.clearTimeout === "function" ? setup.input.clearTimeout : clearTimeout;
+    const pokeDelay = Number.isFinite(setup.input.pokeDelay) ? setup.input.pokeDelay : 160;
+    const root = doc.body;
+    const observer = new setup.Observer(function (mutations) {
+      if (!hostSurface) return;
+      if (typeof setup.input.shouldPoke === "function" && !setup.input.shouldPoke()) return;
+      let shouldPoke = false;
+      for (let i = 0; i < mutations.length && !shouldPoke; i++) {
+        const added = mutations[i].addedNodes || [];
+        for (let n = 0; n < added.length; n++) {
+          if (isHostSurfaceNode(added[n], root)) { shouldPoke = true; break; }
+        }
+      }
+      if (!shouldPoke) return;
+      if (hostSurface.pokeTimer) clearTimeoutFn(hostSurface.pokeTimer);
+      hostSurface.pokeTimer = setTimeoutFn(function () {
+        if (!hostSurface) return;
+        hostSurface.pokeTimer = null;
+        if (typeof setup.input.poke === "function") setup.input.poke();
+      }, pokeDelay);
+    });
+    try {
+      observer.observe(doc.body, { childList: true, subtree: true });
+    } catch (error) {
+      return false;
+    }
+    hostSurface = { observer, pokeTimer: null, clearTimeout: clearTimeoutFn };
+    return true;
+  }
+
+  function stop() {
+    unwatchHostSurfaces();
+    unwatchTranslationState();
+    tracked.slice().forEach(cleanup);
+  }
+
+  return {
+    track,
+    refresh,
+    forEachActive,
+    watchTranslationState,
+    unwatchTranslationState,
+    watchHostSurfaces,
+    unwatchHostSurfaces,
+    stop,
+    ledger,
+    recordFor: findRecord,
+  };
 }
 
-module.exports = { createHostWindowRuntimeManager };
+module.exports = {
+  createHostWindowRuntimeManager,
+  createWindowRuntimeLedger,
+  createWindowRuntimeRecord,
+  isHostPopoutWindow,
+  isHostSurfaceNode,
+};
+
+};
+
+__imtFactories["gm-element"] = function (module, exports, require) {
+"use strict";
+
+function createGmElementApi(getDocument, onStyle) {
+  function resolveDocument() {
+    return typeof getDocument === "function" ? getDocument() : getDocument;
+  }
+
+  function addElement(parentOrTag, tagOrAttrs, maybeAttrs) {
+    var twoArg = typeof parentOrTag === "string";
+    var tagName = twoArg ? parentOrTag : tagOrAttrs;
+    var attributes = twoArg ? tagOrAttrs : maybeAttrs;
+    var runtimeDocument = resolveDocument();
+    var parentNode = twoArg
+      ? (runtimeDocument && (runtimeDocument.head || runtimeDocument.documentElement || runtimeDocument.body))
+      : parentOrTag;
+    var owner = (parentNode && parentNode.ownerDocument) || runtimeDocument;
+    if (!parentNode || typeof parentNode.appendChild !== "function" || !tagName || !owner || typeof owner.createElement !== "function") return null;
+    var el = owner.createElement(String(tagName));
+    if (attributes && typeof attributes === "object") {
+      var keys = Object.keys(attributes);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        if (key === "innerHTML" || key === "outerHTML" || String(key).slice(0, 2).toLowerCase() === "on") continue;
+        if (key === "textContent" || key === "className") {
+          try { el[key] = attributes[key]; } catch (error) {}
+          continue;
+        }
+        try {
+          if (typeof el.setAttribute === "function") el.setAttribute(key, String(attributes[key]));
+          else el[key] = attributes[key];
+        } catch (error) {}
+      }
+    }
+    try { parentNode.appendChild(el); } catch (error) { return null; }
+    if (typeof onStyle === "function" && String(tagName).toLowerCase() === "style") {
+      try { onStyle(el); } catch (error) {}
+    }
+    return el;
+  }
+
+  function addStyle(cssText) {
+    var runtimeDocument = resolveDocument();
+    if (!runtimeDocument) return null;
+    return addElement(runtimeDocument.head || runtimeDocument.documentElement, "style", { textContent: String(cssText || "") });
+  }
+
+  return { addElement: addElement, addStyle: addStyle };
+}
+
+module.exports = { createGmElementApi };
+
+};
+
+__imtFactories["gm-headers"] = function (module, exports, require) {
+"use strict";
+
+function createGmHeaders() {
+  function headersToObject(input) {
+    var result = {};
+    if (!input) return result;
+    if (Array.isArray(input)) {
+      for (var i = 0; i < input.length; i++) {
+        if (input[i] && input[i].length >= 2) result[String(input[i][0])] = String(input[i][1]);
+      }
+      return result;
+    }
+    if (typeof input.forEach === "function") {
+      input.forEach(function (value, key) { result[String(key)] = String(value); });
+      return result;
+    }
+    if (typeof input === "object") {
+      var keys = Object.keys(input);
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        if (input[key] !== undefined && input[key] !== null) result[key] = String(input[key]);
+      }
+    }
+    return result;
+  }
+
+  function hasHeader(headers, name) {
+    var target = String(name).toLowerCase();
+    return Object.keys(headers || {}).some(function (key) { return key.toLowerCase() === target; });
+  }
+
+  function getResponseHeader(headers, name) {
+    var target = String(name).toLowerCase();
+    var key = Object.keys(headers || {}).find(function (candidate) { return candidate.toLowerCase() === target; });
+    return key ? headers[key] : "";
+  }
+
+  function responseHeadersToString(headers) {
+    return Object.keys(headers || {}).map(function (key) { return key + ": " + headers[key]; }).join("\r\n");
+  }
+
+  return {
+    headersToObject: headersToObject,
+    hasHeader: hasHeader,
+    getResponseHeader: getResponseHeader,
+    responseHeadersToString: responseHeadersToString,
+  };
+}
+
+module.exports = { createGmHeaders };
+
+};
+
+__imtFactories["document-session"] = function (module, exports, require) {
+"use strict";
+
+function windowDestroyed(documentWindow) {
+  if (!documentWindow) return true;
+  try { return documentWindow.isDestroyed(); } catch (error) { return true; }
+}
+
+function presentWindow(documentWindow) {
+  try {
+    if (typeof documentWindow.isMinimized === "function" && documentWindow.isMinimized() && typeof documentWindow.restore === "function") {
+      documentWindow.restore();
+    }
+  } catch (error) {}
+  try { if (typeof documentWindow.show === "function") documentWindow.show(); } catch (error) {}
+  try { if (typeof documentWindow.focus === "function") documentWindow.focus(); } catch (error) {}
+}
+
+function createDocumentWindowOptions(title, preloadPath) {
+  return {
+    width: 1040,
+    height: 800,
+    title: "沉浸式翻译 - " + String(title || "文档翻译"),
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      preload: preloadPath,
+    },
+  };
+}
+
+const RETRYABLE_HANDOFF_CODES = {
+  handoff_state_unconfirmed: true,
+  cdp_command_failed: true,
+  document_unavailable: true,
+  file_input_unavailable: true,
+};
+
+function createDocumentSession(options) {
+  const clearTimeoutFn = options && options.clearTimeout ? options.clearTimeout : clearTimeout;
+  let windowRef = null;
+  let generation = 0;
+  let spec = null;
+  let handoffRequest = null;
+  let handoffPromise = null;
+  let runtimeFailureNoticeGeneration = 0;
+  let pdfDownloadSource = null;
+  let pendingPdfDownload = null;
+  let runtimeRefreshTimer = null;
+
+  function clearRefresh() {
+    const timer = runtimeRefreshTimer;
+    runtimeRefreshTimer = null;
+    if (timer) clearTimeoutFn(timer);
+    return !!timer;
+  }
+
+  function cancelPendingDownload() {
+    const pending = pendingPdfDownload;
+    pendingPdfDownload = null;
+    if (pending && pending.capture && typeof pending.capture.cancel === "function") {
+      try { Promise.resolve(pending.capture.cancel()).catch(function () {}); } catch (error) {}
+    }
+    return pending;
+  }
+
+  function resetWork(keepHandoffOperation) {
+    handoffRequest = null;
+    if (!keepHandoffOperation) handoffPromise = null;
+    pdfDownloadSource = null;
+    clearRefresh();
+    cancelPendingDownload();
+  }
+
+  function pendingHandoff() {
+    if (!handoffRequest) return null;
+    return {
+      generation: handoffRequest.generation,
+      file: handoffRequest.file,
+      spec: handoffRequest.spec,
+    };
+  }
+
+  function expectedHandoffFileName() {
+    if (!handoffRequest || !handoffRequest.file) return "";
+    return String(handoffRequest.file.name || "").trim() || String(handoffRequest.file.path || "").split(/[\\/]/).pop() || "";
+  }
+
+  function handoffOverlayState(pending) {
+    let isPending;
+    if (pending === true) isPending = !!(handoffRequest && handoffRequest.file);
+    else if (pending === false) isPending = false;
+    else isPending = !!(handoffRequest && handoffRequest.file && handoffRequest.overlayActive !== false);
+    return { pending: isPending, expectedFileName: isPending ? expectedHandoffFileName() : "" };
+  }
+
+  function setHandoffOverlay(pending) {
+    if (!handoffRequest) return;
+    if (pending === false) handoffRequest.overlayActive = false;
+    else if (pending === true) handoffRequest.overlayActive = true;
+  }
+
+  function waitForHandoff() {
+    const current = handoffPromise;
+    if (!current) return Promise.resolve();
+    return Promise.resolve(current).then(function () {}, function () {}).then(function () {
+      if (handoffPromise && handoffPromise !== current) return waitForHandoff();
+    });
+  }
+
+  function adoptHandoff(operation) {
+    handoffPromise = operation;
+    Promise.resolve(operation).then(function () {}, function () {}).then(function () {
+      if (handoffPromise === operation) handoffPromise = null;
+    });
+    return operation;
+  }
+
+  function claimHandoffAttempt() {
+    if (!handoffRequest || handoffRequest.started) return null;
+    if (handoffPromise) return { wait: true };
+    handoffRequest.started = true;
+    handoffRequest.attempts = Number(handoffRequest.attempts || 0) + 1;
+    return pendingHandoff();
+  }
+
+  function claimHandoffWhenIdle(documentWindow) {
+    const expectedWindow = documentWindow === undefined ? windowRef : documentWindow;
+    const expectedGeneration = generation;
+    function belongsToWaiter() {
+      if (generation !== expectedGeneration) return false;
+      if (expectedWindow) return isCurrent(expectedWindow, expectedGeneration);
+      return windowRef === null;
+    }
+    function next() {
+      if (!belongsToWaiter()) return Promise.resolve(null);
+      const claimed = claimHandoffAttempt();
+      if (!claimed) return Promise.resolve(null);
+      if (claimed.wait) return waitForHandoff().then(next);
+      return Promise.resolve(claimed);
+    }
+    return next();
+  }
+
+  function scheduleHandoffRetry(code, expectedGeneration, scheduleTimeout, retry) {
+    if (!RETRYABLE_HANDOFF_CODES[code]) return false;
+    if (!handoffRequest || handoffRequest.generation !== expectedGeneration || handoffRequest.attempts >= 5) return false;
+    if (typeof scheduleTimeout !== "function" || typeof retry !== "function") return false;
+    handoffRequest.started = false;
+    scheduleTimeout(function () {
+      if (handoffRequest && handoffRequest.generation === expectedGeneration) retry();
+    }, 300);
+    return true;
+  }
+
+  function isCurrent(documentWindow, expectedGeneration) {
+    if (!documentWindow || windowRef !== documentWindow || windowDestroyed(documentWindow)) return false;
+    if (Number.isFinite(expectedGeneration) && expectedGeneration !== generation) return false;
+    return true;
+  }
+
+  function begin(nextSpec, handoffFile) {
+    generation += 1;
+    spec = nextSpec || { autoHandoff: false };
+    resetWork(true);
+    if (spec.autoHandoff && handoffFile) {
+      handoffRequest = { generation: generation, file: handoffFile, spec: spec, started: false, attempts: 0 };
+    }
+    return generation;
+  }
+
+  function attach(documentWindow) { windowRef = documentWindow; }
+
+  function clearHandoff() { handoffRequest = null; }
+
+  function abandonOpen() {
+    handoffRequest = null;
+    spec = null;
+  }
+
+  function open(request) {
+    const input = request && typeof request === "object" ? request : {};
+    const nextSpec = input.spec || { autoHandoff: false };
+    const documentUrl = String(input.url || "");
+    const expectedGeneration = begin(nextSpec, nextSpec.autoHandoff ? input.file : null);
+    const existingWindow = windowRef;
+    if (existingWindow && !windowDestroyed(existingWindow)) {
+      presentWindow(existingWindow);
+      try {
+        const reusedLoad = existingWindow.loadURL(documentUrl);
+        if (reusedLoad && typeof reusedLoad.catch === "function") {
+          reusedLoad.catch(function () {
+            if (!isCurrent(existingWindow, expectedGeneration)) return;
+            clearHandoff();
+            if (typeof input.onLoadError === "function") input.onLoadError();
+          });
+        }
+      } catch (error) {
+        if (generation === expectedGeneration) clearHandoff();
+        if (typeof input.onLoadError === "function") input.onLoadError();
+        return { ok: false, code: "load_failed", reused: true, window: existingWindow, generation: expectedGeneration };
+      }
+      return { ok: true, reused: true, window: existingWindow, generation: expectedGeneration };
+    }
+    if (!input.preloadPath) {
+      abandonOpen();
+      return { ok: false, code: "preload_missing", generation: expectedGeneration };
+    }
+    if (typeof input.createWindow !== "function") {
+      abandonOpen();
+      return { ok: false, code: "create_failed", generation: expectedGeneration };
+    }
+    let documentWindow;
+    try {
+      documentWindow = input.createWindow(createDocumentWindowOptions(input.title, input.preloadPath));
+    } catch (error) {
+      clearHandoff();
+      return { ok: false, code: "create_failed", generation: expectedGeneration };
+    }
+    attach(documentWindow);
+    return { ok: true, reused: false, window: documentWindow, generation: expectedGeneration };
+  }
+
+  return {
+    window() { return windowRef; },
+    generation() { return generation; },
+    spec() { return spec || {}; },
+    pendingHandoff,
+    pdfDownloadSource() { return pdfDownloadSource; },
+    pendingDownload() { return pendingPdfDownload; },
+    isCurrent,
+    begin,
+    attach,
+    open,
+    clearHandoff,
+    handoffOverlayState,
+    setHandoffOverlay,
+    waitForHandoff,
+    adoptHandoff,
+    claimHandoffWhenIdle,
+    scheduleHandoffRetry,
+    noteRuntimeFailure(expectedGeneration) {
+      if (runtimeFailureNoticeGeneration === expectedGeneration) return false;
+      runtimeFailureNoticeGeneration = expectedGeneration;
+      return true;
+    },
+    setPdfDownloadSource(source) { pdfDownloadSource = source; },
+    setRefreshTimer(timer) { runtimeRefreshTimer = timer; },
+    isRefreshTimer(timer) { return runtimeRefreshTimer === timer; },
+    clearRefresh,
+    cancelPendingDownload,
+    setPendingDownload(pending) { pendingPdfDownload = pending; },
+    isPendingDownload(pending) { return pendingPdfDownload === pending; },
+    abandonOpen,
+    handleClosed(documentWindow) {
+      if (windowRef !== documentWindow) return false;
+      generation += 1;
+      windowRef = null;
+      spec = null;
+      resetWork();
+      return true;
+    },
+    close() {
+      generation += 1;
+      spec = null;
+      resetWork();
+      const documentWindow = windowRef;
+      windowRef = null;
+      return documentWindow;
+    },
+  };
+}
+
+module.exports = { createDocumentSession };
 
 };
 
@@ -1138,6 +1873,9 @@ module.exports = {
 __imtFactories["document-runtime"] = function (module, exports, require) {
 "use strict";
 
+const { createGmElementApi } = __imtRequire("gm-element");
+const { createGmHeaders } = __imtRequire("gm-headers");
+
 const DOCUMENT_RUNTIME_WORLD_ID = 1001;
 const DOCUMENT_RUNTIME_BRIDGE_KEY = "__imtDocumentRuntimeBridge";
 const DOCUMENT_RUNTIME_INIT_CHANNEL = "imt-document-runtime:init";
@@ -1201,7 +1939,6 @@ function runDocumentRuntimeBootstrap(options) {
     if (!initState || initState.trusted !== true) return { ok: false, code: "untrusted_document" };
 
     let downloadControlObserver = null;
-    let downloadControlPollTimer = null;
     let downloadStatusSubscribed = false;
     let downloadControlRefreshPending = false;
     let downloadControlResetTimer = null;
@@ -1474,12 +2211,7 @@ function runDocumentRuntimeBootstrap(options) {
             ensurePdfDownloadControl();
           }, 0);
         });
-        downloadControlObserver.observe(documentObject.documentElement, { childList: true, subtree: true });
-      }
-      if (!downloadControlPollTimer && typeof globalThis.setInterval === "function") {
-        downloadControlPollTimer = globalThis.setInterval(function () {
-          ensurePdfDownloadControl();
-        }, 1000);
+        downloadControlObserver.observe(documentObject.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "aria-disabled", "class", "hidden"] });
       }
       return control;
     };
@@ -1535,33 +2267,11 @@ function runDocumentRuntimeBootstrap(options) {
       return id;
     };
     const gmRemoveValueChangeListener = function (id) { return delete valueListeners[id]; };
-    const headersToObject = function (input) {
-      const result = {};
-      if (!input) return result;
-      if (typeof input.forEach === "function") {
-        input.forEach(function (value, key) { result[String(key)] = String(value); });
-        return result;
-      }
-      if (Array.isArray(input)) {
-        input.forEach(function (entry) {
-          if (entry && entry.length >= 2) result[String(entry[0])] = String(entry[1]);
-        });
-        return result;
-      }
-      if (typeof input === "object") {
-        Object.keys(input).forEach(function (key) {
-          if (input[key] !== undefined && input[key] !== null) result[key] = String(input[key]);
-        });
-      }
-      return result;
-    };
-    const hasHeader = function (headers, name) {
-      const target = String(name).toLowerCase();
-      return Object.keys(headers || {}).some(function (key) { return key.toLowerCase() === target; });
-    };
-    const responseHeadersToString = function (headers) {
-      return Object.keys(headers || {}).map(function (key) { return key + ": " + headers[key]; }).join("\r\n");
-    };
+    const gmHeaders = createGmHeaders();
+    const headersToObject = gmHeaders.headersToObject;
+    const hasHeader = gmHeaders.hasHeader;
+    const getResponseHeader = gmHeaders.getResponseHeader;
+    const responseHeadersToString = gmHeaders.responseHeadersToString;
     const bytesToBase64 = function (bytes) {
       let binary = "";
       const chunkSize = 0x8000;
@@ -1607,14 +2317,13 @@ function runDocumentRuntimeBootstrap(options) {
       }
       if (type === "blob") {
         const bytes = bridgeResponseBytes(response);
-        const contentTypeKey = Object.keys(response.headers || {}).find(function (key) { return key.toLowerCase() === "content-type"; });
+        const contentType = getResponseHeader(response.headers, "content-type") || "application/octet-stream";
         return typeof Blob === "function"
-          ? new Blob([bytes], { type: contentTypeKey ? response.headers[contentTypeKey] : "application/octet-stream" })
+          ? new Blob([bytes], { type: contentType })
           : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
       }
       if (type === "document" && typeof DOMParser === "function") {
-        const contentTypeKey = Object.keys(response.headers || {}).find(function (key) { return key.toLowerCase() === "content-type"; });
-        const mime = contentTypeKey && String(response.headers[contentTypeKey]).toLowerCase().indexOf("html") >= 0
+        const mime = String(getResponseHeader(response.headers, "content-type")).toLowerCase().indexOf("html") >= 0
           ? "text/html"
           : "application/xml";
         return new DOMParser().parseFromString(text, mime);
@@ -1761,20 +2470,16 @@ function runDocumentRuntimeBootstrap(options) {
     globalThis.GM_xmlHttpRequest = gmXmlHttpRequest;
     globalThis.GM_fetch = gmFetch;
     globalThis.GM_info = gmInfo;
-    globalThis.GM_addStyle = function (cssText) {
-      if (!globalThis.document || typeof globalThis.document.createElement !== "function") return null;
-      const style = globalThis.document.createElement("style");
-      style.textContent = String(cssText || "");
-      const parent = globalThis.document.head || globalThis.document.documentElement;
-      if (parent && typeof parent.appendChild === "function") parent.appendChild(style);
-      return style;
-    };
+    const gmElementApi = createGmElementApi(function () { return globalThis.document; });
+    const gmAddElement = gmElementApi.addElement;
+    const gmAddStyle = gmElementApi.addStyle;
+    globalThis.GM_addStyle = gmAddStyle;
     globalThis.GM_openInTab = function (url) {
       if (typeof globalThis.open === "function") return globalThis.open(String(url || ""), "_blank");
       return null;
     };
     globalThis.GM_registerMenuCommand = function () { return 0; };
-    globalThis.GM_addElement = function () { return null; };
+    globalThis.GM_addElement = gmAddElement;
     globalThis.GM = {
       info: gmInfo,
       getValue: gmGetValue,
@@ -1892,7 +2597,7 @@ function createDocumentRuntimeBootstrap(options) {
   const executableBootstrap = bootstrapSource.replace(marker, function () {
     return "\n" + userscriptSource + "\n";
   });
-  return "(" + executableBootstrap + ")(" + JSON.stringify(payload) + ")";
+  return "(function(createGmElementApi, createGmHeaders){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + ")";
 }
 
 module.exports = {
@@ -2286,6 +2991,20 @@ var IMTExtendedPlugin = (function () {
   var PROVIDER_WECHAT_FAQ_URL = providerAuthNavigation.WECHAT_FAQ_URL;
   var createTranslationViewBridge = __imtRequire("translation-view-bridge").createTranslationViewBridge;
   var createHostWindowRuntimeManager = __imtRequire("host-window-runtime").createHostWindowRuntimeManager;
+  var createWindowRuntimeLedger = __imtRequire("host-window-runtime").createWindowRuntimeLedger;
+  var isHostPopoutWindow = __imtRequire("host-window-runtime").isHostPopoutWindow;
+  var createGmElementApi = __imtRequire("gm-element").createGmElementApi;
+  var createGmHeaders = __imtRequire("gm-headers").createGmHeaders;
+  var gmHeaders = createGmHeaders();
+  var _headersToObject = gmHeaders.headersToObject;
+  var _hasHeader = gmHeaders.hasHeader;
+  var _getResponseHeader = gmHeaders.getResponseHeader;
+  var _responseHeadersToString = gmHeaders.responseHeadersToString;
+  var createDocumentSession = __imtRequire("document-session").createDocumentSession;
+  var translationState = __imtRequire("translation-state");
+  var isActiveTranslationState = translationState.isActiveTranslationState;
+  var readActiveTranslationState = translationState.readActiveTranslationState;
+  var syncProtocol = __imtRequire("sync-protocol");
   var documentWorkspace = __imtRequire("document-workspace");
   var FILE_WORKSPACE_URL = documentWorkspace.FILE_WORKSPACE_URL;
   var PDF_WORKSPACE_URL = documentWorkspace.PDF_WORKSPACE_URL;
@@ -2319,8 +3038,6 @@ var IMTExtendedPlugin = (function () {
 
   var PLUGIN_ID = "immersive-translate-extended";
   var PLUGIN_VERSION = "4.0.2";
-  var DASHBOARD_EMBEDDED_ENABLED = true;
-  var DOCUMENT_WORKSPACE_ENABLED = true;
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_BODY_BYTES = 8 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -2330,7 +3047,7 @@ var IMTExtendedPlugin = (function () {
   var I18N_PLUGIN_ID = "i18n";
   var IMT_STANDALONE_ID = "immersive-translate";
 
-  var GM_STORE_PREFIX = "imt-gm-";
+  var GM_STORE_PREFIX = syncProtocol.GM_STORE_PREFIX;
   var IMT_CONFIG_KEY = "fullLocalUserConfig";
   var IMT_DASH_HOSTS = {
     "dash.immersivetranslate.com": true,
@@ -2352,18 +3069,17 @@ var IMTExtendedPlugin = (function () {
     "api2.immersivetranslate.com": true,
     "aigw1.immersivetranslate.com": true,
   };
-  var SYNC_MAX_KEYS = 512;
-  var SYNC_MAX_VALUE_BYTES = 512 * 1024;
-  var SYNC_MAX_TOTAL_BYTES = 2 * 1024 * 1024;
-  var CONFIG_MAX_NODES = 16 * 1024;
-  var CONFIG_MAX_ARRAY_ITEMS = 4 * 1024;
-  var SYNC_SCOPE_PORTABLE = "portable-config";
+  var SYNC_MAX_KEYS = syncProtocol.SYNC_MAX_KEYS;
+  var SYNC_MAX_VALUE_BYTES = syncProtocol.SYNC_MAX_VALUE_BYTES;
+  var SYNC_MAX_TOTAL_BYTES = syncProtocol.SYNC_MAX_TOTAL_BYTES;
+  var CONFIG_MAX_NODES = syncProtocol.CONFIG_MAX_NODES;
+  var CONFIG_MAX_ARRAY_ITEMS = syncProtocol.CONFIG_MAX_ARRAY_ITEMS;
+  var SYNC_SCOPE_PORTABLE = syncProtocol.SYNC_SCOPE_PORTABLE;
   // Keep the wire value stable for older preload snapshots. The scope now
   // carries the complete credential-redacted advanced configuration.
-  var SYNC_SCOPE_DASHBOARD = "dashboard-account-services";
+  var SYNC_SCOPE_DASHBOARD = syncProtocol.SYNC_SCOPE_DASHBOARD;
   var SYNC_TOP_KEYS = { fullLocalUserConfig: true, userInfo: true, user_info: true, subscriptionInfo: true, translateServices: true, translateServiceConfig: true, memberConfig: true, serviceConfig: true, translatorConfig: true, usage_limit_stats: true };
   var DASHBOARD_SYNC_KEYS = { fullLocalUserConfig: true, userInfo: true, subscriptionInfo: true };
-  var SERVICE_AVAILABILITY_FIELDS = { visible: true, enabled: true, enable: true, available: true, isAvailable: true, configured: true, isConfigured: true, hidden: true, disabled: true };
   var USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
   var DASHBOARD_PKCE_ARGUMENT_PREFIX = "--imt-pkce-channel=";
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
@@ -2380,10 +3096,6 @@ var IMTExtendedPlugin = (function () {
   ];
   var UI_HOST_SURFACE_SELECTORS = [".mod-settings", ".modal-container", ".mod-community-plugin", ".mod-community-theme"];
   var UI_DIALOG_EXCLUSION_SELECTORS = [".modal", "[role=dialog]", '[role="dialog"]'];
-  var HOST_SURFACE_CLASS_NAMES = [
-    "modal-container", "modal", "mod-settings", "mod-community-plugin", "mod-community-theme",
-    "menu", "popover", "tooltip", "prompt", "community-item", "vertical-tab-header",
-  ];
   var PROTECTED_EDITOR_SELECTORS = [".markdown-source-view", ".cm-editor"];
   var ARTICLE_TRANSLATE_SELECTOR = ".markdown-reading-view *";
   var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view"].concat(
@@ -2431,22 +3143,6 @@ var IMTExtendedPlugin = (function () {
     },
     userscriptSidePanelConfigVersion: 0,
   };
-
-  var CSS_STYLES =
-    "#imt-conflict-notice{position:fixed;top:20px;right:20px;z-index:10000;background-color:var(--background-secondary);border:1px solid var(--text-error);border-radius:8px;padding:12px 16px;max-width:360px;box-shadow:0 4px 16px rgba(0,0,0,.2);font-size:13px;color:var(--text-normal)}" +
-    "#imt-conflict-notice h4{margin:0 0 6px;color:var(--text-error)}" +
-    "#imt-conflict-notice p{margin:4px 0;line-height:1.5}" +
-    "#imt-conflict-notice button{margin-top:8px;padding:4px 12px;border-radius:4px;border:1px solid var(--background-modifier-border);background-color:var(--interactive-accent);color:var(--text-on-accent);cursor:pointer;font-size:12px}" +
-    ".imt-provider-login-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}" +
-    ".imt-settings-import{display:flex;flex-direction:column;gap:8px;margin:8px 0 18px}" +
-    ".imt-settings-import textarea{width:100%;min-height:112px;padding:8px;border:1px solid var(--background-modifier-border);border-radius:4px;background-color:var(--background-modifier-form-field);color:var(--text-normal);font:12px var(--font-monospace);resize:vertical}" +
-    ".imt-settings-import-actions{display:flex;justify-content:flex-end;gap:8px}" +
-    ".imt-account-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:12px;background-color:var(--background-primary)}" +
-    ".imt-account-avatar{width:32px;height:32px;border-radius:50%;background-color:var(--background-modifier-border);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-muted)}" +
-    ".imt-account-info{flex:1}" +
-    ".imt-account-name{font-size:13px;font-weight:500;color:var(--text-normal)}" +
-    ".imt-account-status{font-size:11px;color:var(--text-muted)}" +
-    ".imt-account-check{color:#22c55e;font-size:16px;font-weight:bold}";
 
   var _initGuardKey = "__imt_extend_init_guard__";
   var _reloadCountKey = "__imt_extend_reload_count__";
@@ -2526,7 +3222,6 @@ var IMTExtendedPlugin = (function () {
   function _gmGetConfig() { var state = _readGMConfigState(); return state.valid ? state.value : {}; }
   function _gmSetConfig(c) { try { localStorage.setItem(GM_STORE_PREFIX + IMT_CONFIG_KEY, JSON.stringify(c)); return true; } catch (e) { return false; } }
   function _gmGetValue(k) { try { var s = localStorage.getItem(GM_STORE_PREFIX + k); return s !== null ? JSON.parse(s) : undefined; } catch (e) { return undefined; } }
-  function _gmSetValue(k, v) { try { localStorage.setItem(GM_STORE_PREFIX + k, JSON.stringify(v)); } catch (e) {} }
   function _gmDeleteValue(k) { try { localStorage.removeItem(GM_STORE_PREFIX + k); } catch (e) {} }
 
   function _gmSetValueIfChanged(k, v) {
@@ -2626,61 +3321,6 @@ var IMTExtendedPlugin = (function () {
     };
   }
 
-  function _extractUserscriptVersion(content) {
-    if (typeof content !== "string") return "";
-    var match = content.match(/^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m);
-    return match && /^\d+(?:\.\d+){1,3}(?:[-+][0-9A-Za-z.-]+)?$/.test(match[1]) ? match[1] : "";
-  }
-
-  function _extractServiceAvailabilityPatch(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    var services = value.translationServices;
-    if (!services || typeof services !== "object" || Array.isArray(services)) return null;
-    var safeServices = {};
-    for (var serviceId in services) {
-      if (!Object.prototype.hasOwnProperty.call(services, serviceId) || _isUnsafeSyncProperty(serviceId) || serviceId.length > 256) continue;
-      var service = services[serviceId];
-      if (!service || typeof service !== "object" || Array.isArray(service)) continue;
-      var availability = {};
-      for (var field in SERVICE_AVAILABILITY_FIELDS) {
-        if (typeof service[field] === "boolean") availability[field] = service[field];
-      }
-      if (Object.keys(availability).length > 0) safeServices[serviceId] = availability;
-    }
-    return Object.keys(safeServices).length > 0 ? { translationServices: safeServices } : null;
-  }
-
-  function _mergeServiceAvailabilityPatch(current, patch) {
-    var next = {};
-    if (current && typeof current === "object" && !Array.isArray(current)) {
-      for (var rootField in current) {
-        if (Object.prototype.hasOwnProperty.call(current, rootField) && !_isUnsafeSyncProperty(rootField)) next[rootField] = current[rootField];
-      }
-    }
-    var safePatch = _extractServiceAvailabilityPatch(patch);
-    if (!safePatch) return next;
-    var currentServices = next.translationServices && typeof next.translationServices === "object" && !Array.isArray(next.translationServices) ? next.translationServices : {};
-    var mergedServices = {};
-    for (var existingId in currentServices) {
-      if (Object.prototype.hasOwnProperty.call(currentServices, existingId) && !_isUnsafeSyncProperty(existingId)) mergedServices[existingId] = currentServices[existingId];
-    }
-    for (var serviceId in safePatch.translationServices) {
-      if (!Object.prototype.hasOwnProperty.call(safePatch.translationServices, serviceId)) continue;
-      var existing = mergedServices[serviceId];
-      var merged = {};
-      if (existing && typeof existing === "object" && !Array.isArray(existing)) {
-        for (var field in existing) {
-          if (Object.prototype.hasOwnProperty.call(existing, field) && !_isUnsafeSyncProperty(field)) merged[field] = existing[field];
-        }
-      }
-      var availability = safePatch.translationServices[serviceId];
-      for (var availabilityField in availability) merged[availabilityField] = availability[availabilityField];
-      mergedServices[serviceId] = merged;
-    }
-    next.translationServices = mergedServices;
-    return next;
-  }
-
   // Dashboard sends a complete safe settings object, but it never receives
   // credential-shaped fields. Merge its patch over the local object so API
   // keys, future userscript fields, and other local-only values survive.
@@ -2743,88 +3383,24 @@ var IMTExtendedPlugin = (function () {
     return changed;
   }
 
-  function _isSensitiveSyncKey(key) {
-    var normalized = String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
-    var mouseHoverControlKey = /^mouse_hover(?:_[a-z0-9]+)*_key$/.test(normalized)
-      && !/(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key/.test(normalized);
-    if (mouseHoverControlKey || normalized === "hotkey") return false;
-    return /(?:^|_)(?:auth|bearer|oauth|session)(?:_|$)/.test(normalized) || /(?:token|secret|password|passwd|authorization|cookie|jwt|credential|(?:api|app|access|client|private|encryption|signing|storage|subscription|license|service|account|project|provider)[_-]?key|(?:^|[_-])key$|refresh[_-]?token)/.test(normalized);
-  }
+  function _isSensitiveSyncKey(key) { return syncProtocol.isSensitiveSyncKey(key); }
 
-  function _isUnsafeSyncProperty(key) {
-    return key === "__proto__" || key === "constructor" || key === "prototype";
-  }
-
-  function _isAllowedSyncTopKey(key) {
-    return Object.prototype.hasOwnProperty.call(SYNC_TOP_KEYS, key);
-  }
+  function _isUnsafeSyncProperty(key) { return syncProtocol.isUnsafeSyncProperty(key); }
 
   function _redactSyncValue(value, depth, budget) {
-    if (budget) {
-      if (budget.remaining <= 0) { budget.exceeded = true; return null; }
-      budget.remaining--;
-    }
-    if (depth > 8) return null;
-    if (value === null || value === undefined) return value;
-    if (Array.isArray(value)) {
-      if (budget && value.length > CONFIG_MAX_ARRAY_ITEMS) { budget.exceeded = true; return null; }
-      var items = [];
-      for (var itemIndex = 0; itemIndex < value.length; itemIndex++) {
-        items.push(_redactSyncValue(value[itemIndex], depth + 1, budget));
-        if (budget && budget.exceeded) break;
-      }
-      return items;
-    }
-    if (typeof value !== "object") return value;
-    var result = {};
-    for (var key in value) {
-      if (!Object.prototype.hasOwnProperty.call(value, key) || _isUnsafeSyncProperty(key) || _isSensitiveSyncKey(key)) continue;
-      result[key] = _redactSyncValue(value[key], depth + 1, budget);
-      if (budget && budget.exceeded) break;
-    }
-    return result;
+    return syncProtocol.redactSyncValue(value, depth, budget);
   }
 
   function _sanitizeFullLocalUserConfig(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    var budget = { remaining: CONFIG_MAX_NODES, exceeded: false };
-    var safeConfig = _redactSyncValue(value, 0, budget);
-    if (budget.exceeded) return null;
-    var serialized;
-    try { serialized = JSON.stringify(safeConfig); } catch (e) { return null; }
-    if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
-    return safeConfig;
-  }
-
-  function _canonicalSyncSuffix(suffix) {
-    if (suffix === "user_info") return "userInfo";
-    if (suffix === "memberConfig") return "fullLocalUserConfig";
-    if (suffix === "serviceConfig" || suffix === "translatorConfig") return "translateServiceConfig";
-    return suffix;
-  }
-
-  function _orderedSyncValues(values) {
-    var ordered = {};
-    Object.keys(values || {}).sort().forEach(function (key) { ordered[key] = values[key]; });
-    return ordered;
+    return syncProtocol.sanitizeFullLocalUserConfig(value);
   }
 
   function _hashSyncPayload(values, deletedKeys) {
-    var input = JSON.stringify({ values: _orderedSyncValues(values), deletedKeys: (deletedKeys || []).slice().sort() });
-    var hash = 2166136261;
-    for (var i = 0; i < input.length; i++) { hash ^= input.charCodeAt(i); hash = Math.imul(hash, 16777619); }
-    return (hash >>> 0).toString(16).padStart(8, "0");
+    return syncProtocol.hashSyncPayload(values, deletedKeys);
   }
 
   function _normalizeSyncKey(key) {
-    if (typeof key !== "string" || key.length > 256) return null;
-    if (key.indexOf(GM_STORE_PREFIX) === 0) {
-      var suffix = _canonicalSyncSuffix(key.slice(GM_STORE_PREFIX.length));
-      if (!suffix || suffix.indexOf("__") === 0 || _isSensitiveSyncKey(suffix) || !_isAllowedSyncTopKey(suffix)) return null;
-      return GM_STORE_PREFIX + suffix;
-    }
-    if (!_isAllowedSyncTopKey(key) || _isSensitiveSyncKey(key)) return null;
-    return GM_STORE_PREFIX + _canonicalSyncSuffix(key);
+    return syncProtocol.normalizeSyncKey(key, SYNC_TOP_KEYS, GM_STORE_PREFIX);
   }
 
   function _hasPersistedAuthToken() {
@@ -2893,34 +3469,6 @@ var IMTExtendedPlugin = (function () {
     return !!(url && url.protocol === "https:" && Object.prototype.hasOwnProperty.call(IMT_AUTH_HOSTS, url.hostname.toLowerCase()));
   }
 
-  function _headersToObject(headers) {
-    var result = {};
-    if (!headers) return result;
-    if (typeof headers.forEach === "function") {
-      headers.forEach(function (value, key) { result[String(key)] = String(value); });
-    } else if (Array.isArray(headers)) {
-      for (var i = 0; i < headers.length; i++) if (headers[i] && headers[i].length >= 2) result[String(headers[i][0])] = String(headers[i][1]);
-    } else if (typeof headers === "object") {
-      for (var key in headers) if (Object.prototype.hasOwnProperty.call(headers, key) && headers[key] !== undefined) result[key] = String(headers[key]);
-    }
-    return result;
-  }
-
-  function _hasHeader(headers, name) {
-    var lowerName = name.toLowerCase();
-    return Object.keys(headers || {}).some(function (key) { return key.toLowerCase() === lowerName; });
-  }
-
-  function _getResponseHeader(headers, name) {
-    var lowerName = name.toLowerCase();
-    var key = Object.keys(headers || {}).find(function (candidate) { return candidate.toLowerCase() === lowerName; });
-    return key ? headers[key] : "";
-  }
-
-  function _responseHeadersToString(headers) {
-    return Object.keys(headers || {}).map(function (key) { return key + ": " + headers[key]; }).join("\r\n");
-  }
-
   function _encodeUtf8(value) { return new TextEncoder().encode(String(value)); }
 
   function _joinByteArrays(parts) {
@@ -2969,24 +3517,20 @@ var IMTExtendedPlugin = (function () {
   function IMTExtendedPluginClass(app, manifest) {
     obsidian.Plugin.call(this, app, manifest);
     this.settings = Object.assign({}, DEFAULT_SETTINGS);
-    this._styleInjected = false;
     this._i18nDisabled = false;
     this._i18nConflictState = null;
     this._initialized = false;
     this._isUnloaded = true; this._activationGeneration = 0;
     this._startupTimers = []; this._globalPatches = []; this._gmStyleElements = [];
-    this._gmPolyfillsInstalled = false; this._browserAPIPolyfillInstalled = false; this._gmFetchPolyfillInstalled = false;
+    this._windowRuntimeLedger = createWindowRuntimeLedger();
     this._externalScripts = []; this._originalWindowOpen = null;
     this._loadedUserscriptVersion = ""; this._installedRuntime = null; this._runtimeInstallPromise = null; this._runtimeInstallGeneration = 0;
+    this._runtimeInstallPhase = ""; this._runtimeInstallError = ""; this._latestRuntimeSource = ""; this._latestRuntimeSourceVersion = "";
     this._latestRuntimeVersion = ""; this._runtimeVersionCheckState = "idle"; this._runtimeVersionCheckedAt = 0; this._runtimeVersionCheckPromise = null; this._runtimeVersionCheckGeneration = 0;
     this._patchedWindowOpen = null;
     this._dashboardWindow = null; this._syncPollTimer = null; this._providerLoginGuideModal = null;
-    this._documentWorkspaceWindow = null; this._documentWorkspaceGeneration = 0; this._documentWorkspaceSpec = null;
-    this._documentHandoffRequest = null; this._documentHandoffPromise = null; this._documentRuntimeFailureNoticeGeneration = 0;
-    this._documentPdfDownloadSource = null; this._pendingDocumentPdfDownload = null; this._documentRuntimeRefreshTimer = null;
+    this._documentSession = createDocumentSession();
     this._translationViewBridge = null;
-    this._hostSurfaceObserver = null;
-    this._hostSurfacePokeTimer = null;
     this._hostWindowRuntimeManager = null;
     this._hostWindowUserscriptSource = "";
     this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
@@ -3052,7 +3596,7 @@ var IMTExtendedPlugin = (function () {
       await this._initializeUserscriptSidePanelDefaults();
       if (this._isUnloaded) return;
       this._persistHostScopeConfig();
-      this._injectStyles(); this._startHostWindowRuntimeManager(); this._interceptNavigation();
+      this._startHostWindowRuntimeManager(); this._interceptNavigation();
       this.addSettingTab(new IMTSettingTab(this.app, this));
       this._installDocumentTranslationEntry();
       var pluginInstance = this;
@@ -3078,7 +3622,7 @@ var IMTExtendedPlugin = (function () {
     this._isUnloaded = true; this._activationGeneration++; this._runtimeInstallGeneration++; this._runtimeVersionCheckGeneration++; this._initialized = false;
     try { if (window[_runtimeInstallOwnerKey] === this) delete window[_runtimeInstallOwnerKey]; } catch (e) {}
     this._clearStartupTimers();
-    if (this._translationViewBridge) { this._translationViewBridge.stop(); this._translationViewBridge = null; }
+    if (this._translationViewBridge) { this._stopTranslationViewBridge(); }
     this._stopHostSurfaceTranslationObserver();
     this._stopHostWindowRuntimeManager();
     for (var pdfActionIndex = 0; pdfActionIndex < this._pdfActionElements.length; pdfActionIndex++) {
@@ -3089,9 +3633,8 @@ var IMTExtendedPlugin = (function () {
     if (this._configReplayTimer) { clearTimeout(this._configReplayTimer); this._configReplayTimer = null; }
     if (this._syncPollTimer) { clearInterval(this._syncPollTimer); this._syncPollTimer = null; }
     this._restoreGlobalPatches();
+    this._runtimeSettingsTab = null;
     this._gmValueChangeListeners = Object.create(null); this._browserStorageChangeListeners = [];
-    var styleEl = document.getElementById("imt-enhance-styles"); if (styleEl) styleEl.remove();
-    this._styleInjected = false;
     var conflictNotice = document.getElementById("imt-conflict-notice"); if (conflictNotice) conflictNotice.remove();
     window[_initGuardKey] = false; _resetReloadCount(); console.log("[IMT-Extended] Plugin unloaded");
   };
@@ -3147,10 +3690,6 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._openDocumentTranslationWorkspace = function (file) {
-    if (!this._isDocumentWorkspaceEnabled()) {
-      new obsidian.Notice("文档翻译工作区正在完成平台验证，当前版本暂不开放。");
-      return false;
-    }
     var activeFile = this._getActiveDocumentFile(file);
     var spec = getDocumentWorkspaceSpec(activeFile);
     if (!spec) spec = { kind: "document", title: "文档翻译", url: FILE_WORKSPACE_URL, autoHandoff: false, extensions: [], maxBytes: 0 };
@@ -3277,8 +3816,9 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._initializeDocumentRuntime = function (documentWindow) {
-    var generation = this._documentWorkspaceGeneration;
-    if (!documentWindow || this._documentWorkspaceWindow !== documentWindow || documentWindow.isDestroyed()) {
+    var session = this._documentSession;
+    var generation = session.generation();
+    if (!session.isCurrent(documentWindow)) {
       return Promise.resolve({ ok: false, code: "window_unavailable" });
     }
     var webContents = documentWindow.webContents;
@@ -3291,7 +3831,7 @@ var IMTExtendedPlugin = (function () {
     var userscriptSource = "";
     try { userscriptSource = this._loadInstalledUserscript(); } catch (e) {}
     if (!userscriptSource) return Promise.resolve({ ok: false, code: "userscript_unavailable" });
-    var userscriptVersion = _extractUserscriptVersion(userscriptSource) || this._loadedUserscriptVersion || "0.0.0";
+    var userscriptVersion = extractRuntimeVersion(userscriptSource) || this._loadedUserscriptVersion || "0.0.0";
     var initPayload = {
       trusted: true,
       store: this._collectDocumentRuntimeStore(),
@@ -3314,7 +3854,7 @@ var IMTExtendedPlugin = (function () {
     } catch (e) { return Promise.resolve({ ok: false, code: "runtime_execution_failed" }); }
     var pluginInstance = this;
     return Promise.resolve(execution).then(function (result) {
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow || pluginInstance._documentWorkspaceGeneration !== generation || documentWindow.isDestroyed()) {
+      if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) {
         return { ok: false, code: "runtime_superseded" };
       }
       if (!result || result.ok !== true) return result && typeof result === "object" ? result : { ok: false, code: "runtime_unconfirmed" };
@@ -3341,14 +3881,14 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._handleDocumentWorkspaceReady = function (documentWindow) {
-    var spec = this._documentWorkspaceSpec || {};
+    var session = this._documentSession;
+    var spec = session.spec();
     if (spec.kind !== "pdf") return this._startPendingDocumentHandoff(documentWindow);
-    var pluginInstance = this; var generation = this._documentWorkspaceGeneration;
+    var pluginInstance = this; var generation = session.generation();
     return Promise.resolve(this._initializeDocumentRuntime(documentWindow)).then(function (result) {
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow || pluginInstance._documentWorkspaceGeneration !== generation || documentWindow.isDestroyed()) return false;
+      if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) return false;
       if (!result || result.ok !== true) {
-        if (pluginInstance._documentRuntimeFailureNoticeGeneration !== generation) {
-          pluginInstance._documentRuntimeFailureNoticeGeneration = generation;
+        if (pluginInstance._documentSession.noteRuntimeFailure(generation)) {
           new obsidian.Notice(pluginInstance._documentRuntimeFailureMessage(result && result.code) + "；本次未交接 PDF 文件");
         }
         pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
@@ -3356,8 +3896,7 @@ var IMTExtendedPlugin = (function () {
       }
       return pluginInstance._startPendingDocumentHandoff(documentWindow);
     }).catch(function () {
-      if (pluginInstance._documentWorkspaceWindow === documentWindow && pluginInstance._documentWorkspaceGeneration === generation && pluginInstance._documentRuntimeFailureNoticeGeneration !== generation) {
-        pluginInstance._documentRuntimeFailureNoticeGeneration = generation;
+      if (pluginInstance._documentSession.isCurrent(documentWindow, generation) && pluginInstance._documentSession.noteRuntimeFailure(generation)) {
         new obsidian.Notice("PDF 翻译运行时未加载；本次未交接 PDF 文件");
       }
       pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
@@ -3402,24 +3941,12 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._documentHandoffOverlayState = function (pending) {
-    var request = this._documentHandoffRequest;
-    var fileName = request && request.file
-      ? String(request.file.name || "").trim() || String(request.file.path || "").split(/[\\/]/).pop() || ""
-      : "";
-    var isPending;
-    if (pending === true) isPending = !!(request && request.file);
-    else if (pending === false) isPending = false;
-    else isPending = !!(request && request.file && request.overlayActive !== false);
-    return { pending: isPending, expectedFileName: isPending ? fileName : "" };
+    return this._documentSession.handoffOverlayState(pending);
   };
 
   IMTExtendedPluginClass.prototype._pushDocumentHandoffOverlay = function (documentWindow, pending) {
     if (!documentWindow || documentWindow.isDestroyed()) return false;
-    var request = this._documentHandoffRequest;
-    if (request) {
-      if (pending === false) request.overlayActive = false;
-      else if (pending === true) request.overlayActive = true;
-    }
+    this._documentSession.setHandoffOverlay(pending);
     var webContents = documentWindow.webContents;
     if (!webContents || typeof webContents.send !== "function") return false;
     try {
@@ -3431,77 +3958,63 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._startPendingDocumentHandoff = function (documentWindow) {
-    var request = this._documentHandoffRequest;
-    if (!request || request.started || request.generation !== this._documentWorkspaceGeneration || this._documentWorkspaceWindow !== documentWindow) return Promise.resolve(false);
-    if (this._documentHandoffPromise) {
-      var pluginAfterCurrentHandoff = this;
-      var currentHandoff = this._documentHandoffPromise;
-      return Promise.resolve(currentHandoff).catch(function () { return false; }).then(function () {
-        if (pluginAfterCurrentHandoff._documentHandoffRequest !== request) return false;
-        return pluginAfterCurrentHandoff._startPendingDocumentHandoff(documentWindow);
-      });
-    }
-    request.started = true;
-    request.attempts = Number(request.attempts || 0) + 1;
-    this._pushDocumentHandoffOverlay(documentWindow, true);
-    var candidate = this._resolveDocumentHandoffFile(request.file, request.spec);
-    var fileName = request.file && (request.file.name || request.file.path) || "当前 PDF";
-    if (!candidate.ok) {
-      this._pushDocumentHandoffOverlay(documentWindow, false);
-      new obsidian.Notice(this._documentHandoffFailureMessage(candidate.code) + "；请在已打开的页面中手动选择「" + fileName + "」");
-      return Promise.resolve(false);
-    }
+    var session = this._documentSession;
+    if (!session.isCurrent(documentWindow)) return Promise.resolve(false);
     var pluginInstance = this;
-    var generation = request.generation;
-    var scheduleRetry = function (code) {
-      var retryable = code === "handoff_state_unconfirmed" || code === "cdp_command_failed" ||
-        code === "document_unavailable" || code === "file_input_unavailable";
-      if (!retryable || request.attempts >= 5 || pluginInstance._documentHandoffRequest !== request) return false;
-      request.started = false;
-      pluginInstance._scheduleTimeout(function () {
-        if (pluginInstance._documentHandoffRequest === request && pluginInstance._documentWorkspaceWindow === documentWindow && pluginInstance._documentWorkspaceGeneration === generation) {
-          pluginInstance._startPendingDocumentHandoff(documentWindow);
+    return session.claimHandoffWhenIdle(documentWindow).then(function (claimed) {
+      if (!claimed || !pluginInstance._documentSession.isCurrent(documentWindow, claimed.generation)) return false;
+      pluginInstance._pushDocumentHandoffOverlay(documentWindow, true);
+      var candidate = pluginInstance._resolveDocumentHandoffFile(claimed.file, claimed.spec);
+      var fileName = claimed.file && (claimed.file.name || claimed.file.path) || "当前 PDF";
+      if (!candidate.ok) {
+        pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
+        new obsidian.Notice(pluginInstance._documentHandoffFailureMessage(candidate.code) + "；请在已打开的页面中手动选择「" + fileName + "」");
+        return false;
+      }
+      var generation = claimed.generation;
+      var scheduleRetry = function (code) {
+        return pluginInstance._documentSession.scheduleHandoffRetry(
+          code,
+          generation,
+          function (callback, delay) { pluginInstance._scheduleTimeout(callback, delay); },
+          function () {
+            if (pluginInstance._documentSession.isCurrent(documentWindow, generation)) {
+              pluginInstance._startPendingDocumentHandoff(documentWindow);
+            }
+          }
+        );
+      };
+      var operation = Promise.resolve(pluginInstance._handoffDocumentFile(documentWindow, candidate)).then(function (result) {
+        if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) return false;
+        if (result && result.ok) {
+          pluginInstance._documentSession.setPdfDownloadSource({
+            generation: generation,
+            absolutePath: candidate.absolutePath,
+            fileName: candidate.fileName,
+          });
+          pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
+          pluginInstance._scheduleDocumentRuntimeRefresh(documentWindow, generation);
+          new obsidian.Notice("已将「" + candidate.fileName + "」交给 PDF 翻译工作区");
+          return true;
         }
-      }, 300);
-      return true;
-    };
-    var operation = Promise.resolve(this._handoffDocumentFile(documentWindow, candidate)).then(function (result) {
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow || pluginInstance._documentWorkspaceGeneration !== generation) return false;
-      if (result && result.ok) {
-        pluginInstance._documentPdfDownloadSource = {
-          generation: generation,
-          absolutePath: candidate.absolutePath,
-          fileName: candidate.fileName,
-        };
+        if (scheduleRetry(result && result.code)) return false;
         pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
-        pluginInstance._scheduleDocumentRuntimeRefresh(documentWindow, generation);
-        new obsidian.Notice("已将「" + candidate.fileName + "」交给 PDF 翻译工作区");
-        return true;
-      }
-      if (scheduleRetry(result && result.code)) return false;
-      pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
-      new obsidian.Notice(pluginInstance._documentHandoffFailureMessage(result && result.code) + "；请在已打开的页面中手动选择「" + candidate.fileName + "」");
-      return false;
-    }).catch(function () {
-      if (pluginInstance._documentWorkspaceWindow === documentWindow && pluginInstance._documentWorkspaceGeneration === generation) {
-        if (scheduleRetry("cdp_command_failed")) return false;
-        pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
-        new obsidian.Notice("自动交接未完成；请在已打开的页面中手动选择「" + candidate.fileName + "」");
-      }
-      return false;
-    }).then(function (result) {
-      if (pluginInstance._documentHandoffPromise === operation) pluginInstance._documentHandoffPromise = null;
-      return result;
+        new obsidian.Notice(pluginInstance._documentHandoffFailureMessage(result && result.code) + "；请在已打开的页面中手动选择「" + candidate.fileName + "」");
+        return false;
+      }).catch(function () {
+        if (pluginInstance._documentSession.isCurrent(documentWindow, generation)) {
+          if (scheduleRetry("cdp_command_failed")) return false;
+          pluginInstance._pushDocumentHandoffOverlay(documentWindow, false);
+          new obsidian.Notice("自动交接未完成；请在已打开的页面中手动选择「" + candidate.fileName + "」");
+        }
+        return false;
+      });
+      return session.adoptHandoff(operation);
     });
-    this._documentHandoffPromise = operation;
-    return operation;
   };
 
   IMTExtendedPluginClass.prototype._clearDocumentRuntimeRefresh = function () {
-    var timer = this._documentRuntimeRefreshTimer;
-    this._documentRuntimeRefreshTimer = null;
-    if (timer) clearTimeout(timer);
-    return !!timer;
+    return this._documentSession.clearRefresh();
   };
 
   IMTExtendedPluginClass.prototype._scheduleDocumentRuntimeRefresh = function (documentWindow, generation, delayMs) {
@@ -3509,22 +4022,20 @@ var IMTExtendedPlugin = (function () {
     var pluginInstance = this;
     var delay = Number.isFinite(delayMs) ? Math.max(0, Math.min(5000, delayMs)) : 750;
     var timer = setTimeout(function () {
-      if (pluginInstance._documentRuntimeRefreshTimer === timer) pluginInstance._documentRuntimeRefreshTimer = null;
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow || pluginInstance._documentWorkspaceGeneration !== generation ||
-          !documentWindow || documentWindow.isDestroyed()) return;
+      if (pluginInstance._documentSession.isRefreshTimer(timer)) pluginInstance._documentSession.setRefreshTimer(null);
+      if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) return;
       var currentUrl = "";
       try { currentUrl = documentWindow.webContents.getURL(); } catch (e) {}
       if (!isTrustedDocumentWorkspaceUrl(currentUrl)) return;
       Promise.resolve(pluginInstance._initializeDocumentRuntime(documentWindow)).catch(function () {});
     }, delay);
     if (timer && typeof timer.unref === "function") timer.unref();
-    this._documentRuntimeRefreshTimer = timer;
+    this._documentSession.setRefreshTimer(timer);
     return true;
   };
 
   IMTExtendedPluginClass.prototype._sendDocumentPdfDownloadStatus = function (documentWindow, state, fileName, generation) {
-    if (!documentWindow || this._documentWorkspaceWindow !== documentWindow || documentWindow.isDestroyed() ||
-        (Number.isFinite(generation) && generation !== this._documentWorkspaceGeneration)) return false;
+    if (!this._documentSession.isCurrent(documentWindow, generation)) return false;
     try {
       documentWindow.webContents.send(DOCUMENT_RUNTIME_STATUS_CHANNEL, {
         state: String(state || "failed"),
@@ -3535,12 +4046,7 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._clearPendingDocumentPdfDownload = function () {
-    var pending = this._pendingDocumentPdfDownload;
-    this._pendingDocumentPdfDownload = null;
-    if (pending && pending.capture && typeof pending.capture.cancel === "function") {
-      try { Promise.resolve(pending.capture.cancel()).catch(function () {}); } catch (e) {}
-    }
-    return pending;
+    return this._documentSession.cancelPendingDownload();
   };
 
   IMTExtendedPluginClass.prototype._armDocumentPdfDownload = function (documentWindow, source) {
@@ -3588,7 +4094,8 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._handleDocumentRuntimeAction = function (documentWindow, action, context) {
-    if (!documentWindow || this._documentWorkspaceWindow !== documentWindow || documentWindow.isDestroyed()) {
+    var session = this._documentSession;
+    if (!session.isCurrent(documentWindow)) {
       return { ok: false, code: "window_unavailable" };
     }
     var currentUrl = "";
@@ -3596,7 +4103,7 @@ var IMTExtendedPlugin = (function () {
     if (!isTrustedDocumentWorkspaceUrl(currentUrl)) return { ok: false, code: "untrusted_document_url" };
     var actionContext = context && typeof context === "object" && !Array.isArray(context) ? context : {};
     if (action === "cancel_translated_pdf_download") {
-      var pendingForCancel = this._pendingDocumentPdfDownload;
+      var pendingForCancel = session.pendingDownload();
       var cancelToken = typeof actionContext.token === "string" ? actionContext.token : "";
       if (pendingForCancel && cancelToken && pendingForCancel.capture && cancelToken !== pendingForCancel.capture.token) {
         return { ok: false, code: "invalid_capture_ticket" };
@@ -3606,10 +4113,10 @@ var IMTExtendedPlugin = (function () {
       return { ok: true, code: "download_cancelled" };
     }
     if (action === "finish_translated_pdf_download") {
-      var pendingForFinish = this._pendingDocumentPdfDownload;
+      var pendingForFinish = session.pendingDownload();
       var finishToken = typeof actionContext.token === "string" ? actionContext.token : "";
       if (!pendingForFinish || !pendingForFinish.capture || !finishToken || finishToken !== pendingForFinish.capture.token ||
-          pendingForFinish.generation !== this._documentWorkspaceGeneration || typeof pendingForFinish.capture.finish !== "function") {
+          pendingForFinish.generation !== session.generation() || typeof pendingForFinish.capture.finish !== "function") {
         return { ok: false, code: "invalid_capture_ticket" };
       }
       return pendingForFinish.capture.finish({
@@ -3619,9 +4126,9 @@ var IMTExtendedPlugin = (function () {
       });
     }
     if (action !== "prepare_translated_pdf_download") return { ok: false, code: "invalid_action" };
-    var spec = this._documentWorkspaceSpec || {};
-    var source = this._documentPdfDownloadSource;
-    if (spec.kind !== "pdf" || !source || source.generation !== this._documentWorkspaceGeneration ||
+    var spec = session.spec();
+    var source = session.pdfDownloadSource();
+    if (spec.kind !== "pdf" || !source || source.generation !== session.generation() ||
         typeof source.absolutePath !== "string" || !source.absolutePath) {
       return { ok: false, code: "source_unavailable" };
     }
@@ -3642,18 +4149,18 @@ var IMTExtendedPlugin = (function () {
     }
     this._clearPendingDocumentPdfDownload();
     var pluginInstance = this;
-    var generation = this._documentWorkspaceGeneration;
+    var generation = session.generation();
     return Promise.resolve(this._armDocumentPdfDownload(documentWindow, source)).then(function (capture) {
       if (!capture || capture.ok !== true) return capture && typeof capture === "object" ? capture : { ok: false, code: "download_prepare_failed" };
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow || pluginInstance._documentWorkspaceGeneration !== generation || documentWindow.isDestroyed()) {
+      if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) {
         try { Promise.resolve(capture.cancel()).catch(function () {}); } catch (e) {}
         return { ok: false, code: "window_unavailable" };
       }
       var pending = { generation: generation, capture: capture };
-      pluginInstance._pendingDocumentPdfDownload = pending;
+      pluginInstance._documentSession.setPendingDownload(pending);
       Promise.resolve(capture.completion).then(function (result) {
-        if (pluginInstance._pendingDocumentPdfDownload !== pending) return;
-        pluginInstance._pendingDocumentPdfDownload = null;
+        if (!pluginInstance._documentSession.isPendingDownload(pending)) return;
+        pluginInstance._documentSession.setPendingDownload(null);
         if (result && result.ok === true) {
           pluginInstance._sendDocumentPdfDownloadStatus(documentWindow, "completed", result.fileName || "", generation);
           new obsidian.Notice("译文 PDF 已保存到源文件夹：「" + result.fileName + "」");
@@ -3664,8 +4171,8 @@ var IMTExtendedPlugin = (function () {
         pluginInstance._sendDocumentPdfDownloadStatus(documentWindow, state, "", generation);
         if (state === "failed") new obsidian.Notice("译文 PDF 保存失败，请重试");
       }).catch(function () {
-        if (pluginInstance._pendingDocumentPdfDownload !== pending) return;
-        pluginInstance._pendingDocumentPdfDownload = null;
+        if (!pluginInstance._documentSession.isPendingDownload(pending)) return;
+        pluginInstance._documentSession.setPendingDownload(null);
         pluginInstance._sendDocumentPdfDownloadStatus(documentWindow, "failed", "", generation);
         new obsidian.Notice("译文 PDF 保存失败，请重试");
       });
@@ -3683,70 +4190,30 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._openDocumentWorkspace = function (options) {
-    if (!this._isDocumentWorkspaceEnabled()) return false;
     var request = options || {};
     var documentUrl = String(request.url || FILE_WORKSPACE_URL);
     if (!isTrustedDocumentWorkspaceUrl(documentUrl)) { new obsidian.Notice("文档翻译地址未通过安全校验"); return false; }
     var BrowserWindow = this._getBrowserWindow();
     if (!BrowserWindow) { new obsidian.Notice("当前 Obsidian 无法创建内嵌文档翻译窗口；不会跳转到系统浏览器。"); return false; }
-    var spec = request.spec || { autoHandoff: false };
-    var generation = ++this._documentWorkspaceGeneration;
     var pluginInstance = this;
-    this._documentWorkspaceSpec = spec;
-    this._clearDocumentRuntimeRefresh();
-    this._documentPdfDownloadSource = null;
-    this._clearPendingDocumentPdfDownload();
-    this._documentHandoffRequest = spec.autoHandoff && request.file
-      ? { generation: generation, file: request.file, spec: spec, started: false, attempts: 0 }
-      : null;
-    if (this._documentWorkspaceWindow && !this._documentWorkspaceWindow.isDestroyed()) {
-      var reusedWindow = this._documentWorkspaceWindow;
-      try { if (typeof reusedWindow.isMinimized === "function" && reusedWindow.isMinimized() && typeof reusedWindow.restore === "function") reusedWindow.restore(); } catch (e) {}
-      try { if (typeof reusedWindow.show === "function") reusedWindow.show(); } catch (e) {}
-      try { if (typeof reusedWindow.focus === "function") reusedWindow.focus(); } catch (e) {}
-      try {
-        var reusedLoad = reusedWindow.loadURL(documentUrl);
-        if (reusedLoad && typeof reusedLoad.catch === "function") reusedLoad.catch(function () {
-          if (pluginInstance._documentWorkspaceWindow !== reusedWindow || pluginInstance._documentWorkspaceGeneration !== generation) return;
-          pluginInstance._documentHandoffRequest = null;
-          new obsidian.Notice("文档翻译页面加载失败，请重试");
-        });
-      } catch (e) {
-        if (this._documentWorkspaceGeneration === generation) this._documentHandoffRequest = null;
-        new obsidian.Notice("文档翻译页面加载失败，请重试");
-        return false;
-      }
-      return true;
-    }
-    var documentPreloadPath = this._getDocumentPreloadPath();
-    if (!documentPreloadPath) {
-      this._documentHandoffRequest = null; this._documentWorkspaceSpec = null;
-      new obsidian.Notice("PDF 翻译桥文件缺失，请重新安装插件");
+    var opened = this._documentSession.open({
+      url: documentUrl,
+      title: request.title,
+      spec: request.spec,
+      file: request.file,
+      preloadPath: this._getDocumentPreloadPath(),
+      createWindow: function (windowOptions) { return new BrowserWindow(windowOptions); },
+      onLoadError: function () { new obsidian.Notice("文档翻译页面加载失败，请重试"); },
+    });
+    if (!opened.ok) {
+      if (opened.code === "preload_missing") new obsidian.Notice("PDF 翻译桥文件缺失，请重新安装插件");
+      else if (opened.code === "create_failed") new obsidian.Notice("Obsidian 内嵌文档翻译窗口创建失败；不会跳转到系统浏览器。");
       return false;
     }
-    var documentWindow;
-    try {
-      documentWindow = new BrowserWindow({
-        width: 1040,
-        height: 800,
-        title: "沉浸式翻译 - " + String(request.title || "文档翻译"),
-        autoHideMenuBar: true,
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-          sandbox: false,
-          webSecurity: true,
-          allowRunningInsecureContent: false,
-          preload: documentPreloadPath,
-        },
-      });
-    } catch (e) {
-      this._documentHandoffRequest = null;
-      new obsidian.Notice("Obsidian 内嵌文档翻译窗口创建失败；不会跳转到系统浏览器。");
-      return false;
-    }
-    this._documentWorkspaceWindow = documentWindow;
-    var isCurrentDocumentWindow = function () { return pluginInstance._documentWorkspaceWindow === documentWindow && !documentWindow.isDestroyed(); };
+    if (opened.reused) return true;
+    var documentWindow = opened.window;
+    var generation = opened.generation;
+    var isCurrentDocumentWindow = function () { return pluginInstance._documentSession.isCurrent(documentWindow); };
     documentWindow.webContents.setWindowOpenHandler(function (details) {
       var targetUrl = details && details.url || "";
       if (!isCurrentDocumentWindow()) return { action: "deny" };
@@ -3804,24 +4271,16 @@ var IMTExtendedPlugin = (function () {
     });
     documentWindow.webContents.on("did-navigate-in-page", function (_event, _targetUrl, isMainFrame) {
       if (isMainFrame === false || !isCurrentDocumentWindow()) return;
-      pluginInstance._scheduleDocumentRuntimeRefresh(documentWindow, pluginInstance._documentWorkspaceGeneration, 100);
+      pluginInstance._scheduleDocumentRuntimeRefresh(documentWindow, pluginInstance._documentSession.generation(), 100);
     });
     documentWindow.on("closed", function () {
-      if (pluginInstance._documentWorkspaceWindow !== documentWindow) return;
-      pluginInstance._clearDocumentRuntimeRefresh();
-      pluginInstance._documentWorkspaceGeneration++;
-      pluginInstance._documentWorkspaceWindow = null;
-      pluginInstance._documentWorkspaceSpec = null;
-      pluginInstance._documentHandoffRequest = null;
-      pluginInstance._documentHandoffPromise = null;
-      pluginInstance._documentPdfDownloadSource = null;
-      pluginInstance._clearPendingDocumentPdfDownload();
+      pluginInstance._documentSession.handleClosed(documentWindow);
     });
     try {
       var load = documentWindow.loadURL(documentUrl);
       if (load && typeof load.catch === "function") load.catch(function () {
-        if (!isCurrentDocumentWindow() || pluginInstance._documentWorkspaceGeneration !== generation) return;
-        pluginInstance._documentHandoffRequest = null;
+        if (!isCurrentDocumentWindow() || pluginInstance._documentSession.generation() !== generation) return;
+        pluginInstance._documentSession.clearHandoff();
         new obsidian.Notice("文档翻译页面加载失败，请重试");
       });
     } catch (e) {
@@ -3833,15 +4292,7 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._closeDocumentWorkspace = function () {
-    this._documentWorkspaceGeneration++;
-    this._documentHandoffRequest = null;
-    this._documentHandoffPromise = null;
-    this._documentWorkspaceSpec = null;
-    this._documentPdfDownloadSource = null;
-    this._clearDocumentRuntimeRefresh();
-    this._clearPendingDocumentPdfDownload();
-    var documentWindow = this._documentWorkspaceWindow;
-    this._documentWorkspaceWindow = null;
+    var documentWindow = this._documentSession.close();
     if (documentWindow && !documentWindow.isDestroyed()) try { documentWindow.close(); } catch (e) {}
   };
 
@@ -3863,7 +4314,7 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._installDocumentTranslationEntry = function () {
-    if (this._isUnloaded || !this._isDocumentWorkspaceEnabled()) return false;
+    if (this._isUnloaded) return false;
     var workspace = this.app && this.app.workspace;
     if (!workspace) return false;
     var pluginInstance = this; var installed = false;
@@ -4056,7 +4507,7 @@ var IMTExtendedPlugin = (function () {
       } catch (e) {}
     }
     this._globalPatches = [];
-    this._gmPolyfillsInstalled = false; this._browserAPIPolyfillInstalled = false; this._gmFetchPolyfillInstalled = false;
+    this._windowRuntimeLedger.resetAllPolyfills();
   };
 
   IMTExtendedPluginClass.prototype._restoreGlobalPatchesForTarget = function (target) {
@@ -4070,11 +4521,6 @@ var IMTExtendedPlugin = (function () {
         else delete patch.target[patch.key];
       } catch (e) {}
     }
-  };
-
-  IMTExtendedPluginClass.prototype._injectStyles = function () {
-    if (this._styleInjected) return; this._styleInjected = true;
-    var style = document.createElement("style"); style.id = "imt-enhance-styles"; style.textContent = CSS_STYLES; document.head.appendChild(style);
   };
 
   IMTExtendedPluginClass.prototype._interceptNavigation = function () {
@@ -4217,30 +4663,80 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._loadInstalledUserscript = function () {
     if (this._installedRuntime && this._installedRuntime.content) {
-      this._loadedUserscriptVersion = this._installedRuntime.version;
       return this._installedRuntime.content;
     }
     var dir = this._getPluginDir();
     if (!dir) throw new Error("Plugin directory is unavailable");
     var runtime = loadInstalledRuntime({ pluginDir: dir });
     this._installedRuntime = runtime;
-    this._loadedUserscriptVersion = runtime.version;
     return runtime.content;
+  };
+
+  IMTExtendedPluginClass.prototype._notifyRuntimeSettingsChanged = function () {
+    var tab = this._runtimeSettingsTab;
+    if (!tab || this._isUnloaded || typeof tab.display !== "function") return;
+    try { tab.display(); } catch (e) {}
+  };
+
+  IMTExtendedPluginClass.prototype._setRuntimeInstallPhase = function (phase, error) {
+    this._runtimeInstallPhase = phase || "";
+    this._runtimeInstallError = error || "";
+    this._notifyRuntimeSettingsChanged();
+  };
+
+  IMTExtendedPluginClass.prototype._rememberOfficialRuntimeSource = function (text, version) {
+    if (typeof text !== "string" || !version) return;
+    this._latestRuntimeSource = text;
+    this._latestRuntimeSourceVersion = version;
+  };
+
+  IMTExtendedPluginClass.prototype._loadedEngineVersion = function (targetWindow) {
+    var runtimeWindow = targetWindow || window;
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (record && record.engineLoaded && record.userscriptVersion) return record.userscriptVersion;
+    try {
+      var state = runtimeWindow[_engineStateKey];
+      if (state && state.loaded && state.mode === "userscript" && typeof state.userscriptVersion === "string" && state.userscriptVersion) {
+        return state.userscriptVersion;
+      }
+    } catch (e) {}
+    return this._loadedUserscriptVersion || "";
+  };
+
+  IMTExtendedPluginClass.prototype._adoptSurvivingEngineVersion = function (targetWindow) {
+    var runtimeWindow = targetWindow || window;
+    if (!this._isEngineLoaded(runtimeWindow)) return "";
+    var version = this._loadedEngineVersion(runtimeWindow);
+    if (!version) return this._loadedUserscriptVersion || "";
+    this._loadedUserscriptVersion = version;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    record.engineLoaded = true;
+    record.userscriptVersion = version;
+    return version;
   };
 
   IMTExtendedPluginClass.prototype._getRuntimeStatus = function () {
     var status = {
       installed: false,
       version: "",
+      loadedVersion: this._loadedEngineVersion(),
       latestVersion: this._latestRuntimeVersion,
       latestState: this._runtimeVersionCheckState,
+      installPhase: this._runtimeInstallPhase || "",
+      installError: this._runtimeInstallError || "",
+      restartRequired: false,
     };
     try {
-      var dir = this._getPluginDir();
-      if (!dir) return status;
-      var runtime = loadInstalledRuntime({ pluginDir: dir });
+      var runtime = this._installedRuntime;
+      if (!runtime || !runtime.version) {
+        var dir = this._getPluginDir();
+        if (!dir) return status;
+        runtime = loadInstalledRuntime({ pluginDir: dir });
+        this._installedRuntime = runtime;
+      }
       status.installed = true;
       status.version = runtime.version;
+      status.restartRequired = !!(status.loadedVersion && status.version && status.loadedVersion !== status.version && this._isEngineLoaded());
     } catch (e) {}
     return status;
   };
@@ -4271,16 +4767,21 @@ var IMTExtendedPlugin = (function () {
         pluginInstance._runtimeVersionCheckedAt = Date.now();
         if (!version) {
           pluginInstance._latestRuntimeVersion = "";
+          pluginInstance._latestRuntimeSource = "";
+          pluginInstance._latestRuntimeSourceVersion = "";
           pluginInstance._runtimeVersionCheckState = "error";
           return { ok: false, version: "" };
         }
         pluginInstance._latestRuntimeVersion = version;
+        pluginInstance._rememberOfficialRuntimeSource(response.text, version);
         pluginInstance._runtimeVersionCheckState = "available";
         return { ok: true, version: version };
       } catch (e) {
         if (!pluginInstance._isUnloaded && pluginInstance._runtimeVersionCheckGeneration === checkGeneration) {
           pluginInstance._runtimeVersionCheckedAt = Date.now();
           pluginInstance._latestRuntimeVersion = "";
+          pluginInstance._latestRuntimeSource = "";
+          pluginInstance._latestRuntimeSourceVersion = "";
           pluginInstance._runtimeVersionCheckState = "error";
         }
         return { ok: false, version: "" };
@@ -4302,32 +4803,66 @@ var IMTExtendedPlugin = (function () {
     try { window[_runtimeInstallOwnerKey] = this; } catch (e) {}
     var operation = (async function () {
       try {
-        var response = await obsidian.requestUrl({ url: OFFICIAL_RUNTIME_URL, method: "GET", throw: false });
+        pluginInstance._setRuntimeInstallPhase("downloading");
+        if (pluginInstance._runtimeVersionCheckPromise) {
+          await pluginInstance._runtimeVersionCheckPromise;
+        }
         if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
           return { ok: false, version: "" };
         }
-        if (!response || response.status !== 200 || typeof response.text !== "string") {
-          new obsidian.Notice("翻译运行时安装失败：官方地址未返回可用脚本");
+        var sourceText = "";
+        var cachedVersion = pluginInstance._latestRuntimeSourceVersion;
+        var cacheFresh = pluginInstance._latestRuntimeSource && cachedVersion &&
+          pluginInstance._runtimeVersionCheckState === "available" &&
+          pluginInstance._runtimeVersionCheckedAt &&
+          Date.now() - pluginInstance._runtimeVersionCheckedAt < RUNTIME_VERSION_CHECK_TTL_MS;
+        if (cacheFresh) sourceText = pluginInstance._latestRuntimeSource;
+        else {
+          var response = await obsidian.requestUrl({ url: OFFICIAL_RUNTIME_URL, method: "GET", throw: false });
+          if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
+            return { ok: false, version: "" };
+          }
+          if (!response || response.status !== 200 || typeof response.text !== "string") {
+            pluginInstance._setRuntimeInstallPhase("", "官方地址未返回可用脚本");
+            new obsidian.Notice("翻译运行时安装失败：官方地址未返回可用脚本");
+            return { ok: false, version: "" };
+          }
+          sourceText = response.text;
+        }
+        if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
+          return { ok: false, version: "" };
+        }
+        pluginInstance._setRuntimeInstallPhase("verifying");
+        var version = extractRuntimeVersion(sourceText);
+        if (!version) {
+          pluginInstance._setRuntimeInstallPhase("", "脚本版本无效");
+          new obsidian.Notice("翻译运行时安装失败：脚本版本无效");
           return { ok: false, version: "" };
         }
         var dir = pluginInstance._getPluginDir();
         if (!dir) {
+          pluginInstance._setRuntimeInstallPhase("", "插件目录不可用");
           new obsidian.Notice("翻译运行时安装失败：插件目录不可用");
           return { ok: false, version: "" };
         }
+        pluginInstance._setRuntimeInstallPhase("writing");
         var engineAlreadyLoaded = pluginInstance._isEngineLoaded();
-        var runtime = installRuntime({ pluginDir: dir, content: response.text });
+        var runtime = installRuntime({ pluginDir: dir, content: sourceText });
         pluginInstance._installedRuntime = runtime;
         pluginInstance._runtimeVersionCheckGeneration++;
         pluginInstance._latestRuntimeVersion = runtime.version;
+        pluginInstance._rememberOfficialRuntimeSource(sourceText, runtime.version);
         pluginInstance._runtimeVersionCheckState = "available";
         pluginInstance._runtimeVersionCheckedAt = Date.now();
         if (engineAlreadyLoaded) {
+          pluginInstance._setRuntimeInstallPhase("");
           new obsidian.Notice("翻译运行时 v" + runtime.version + " 已安装；重启 Obsidian 后生效");
-          return { ok: true, version: runtime.version };
+          return { ok: true, version: runtime.version, restartRequired: true };
         }
+        pluginInstance._setRuntimeInstallPhase("activating");
         pluginInstance._loadedUserscriptVersion = runtime.version;
         var activated = await pluginInstance._activateIMT();
+        pluginInstance._setRuntimeInstallPhase("");
         if (activated && !pluginInstance._isUnloaded) {
           pluginInstance._startTranslationViewBridge();
           pluginInstance._startHostSurfaceTranslationObserver();
@@ -4336,8 +4871,9 @@ var IMTExtendedPlugin = (function () {
         } else {
           new obsidian.Notice("翻译运行时 v" + runtime.version + " 已安装；重启 Obsidian 后启用");
         }
-        return { ok: true, version: runtime.version };
+        return { ok: true, version: runtime.version, restartRequired: !(activated && !pluginInstance._isUnloaded) };
       } catch (e) {
+        pluginInstance._setRuntimeInstallPhase("", String(e && e.message || "unknown error"));
         console.error("[IMT-Extended] Runtime installation failed: " + String(e && e.message || "unknown error"));
         new obsidian.Notice("翻译运行时安装失败；请稍后重试");
         return { ok: false, version: "" };
@@ -4348,6 +4884,7 @@ var IMTExtendedPlugin = (function () {
       return await operation;
     } finally {
       if (this._runtimeInstallPromise === operation) this._runtimeInstallPromise = null;
+      if (this._runtimeInstallPhase) this._setRuntimeInstallPhase("");
     }
   };
 
@@ -4384,19 +4921,7 @@ var IMTExtendedPlugin = (function () {
     return this._getCompatiblePreloadPath("document-preload.js");
   };
 
-  IMTExtendedPluginClass.prototype._isDashboardEmbeddedEnabled = function () {
-    return DASHBOARD_EMBEDDED_ENABLED;
-  };
-
-  IMTExtendedPluginClass.prototype._isDocumentWorkspaceEnabled = function () {
-    return DOCUMENT_WORKSPACE_ENABLED;
-  };
-
   IMTExtendedPluginClass.prototype._openDashboardWindow = function (url) {
-    if (!this._isDashboardEmbeddedEnabled()) {
-      new obsidian.Notice("Dashboard 正在进行隔离桥安全升级，当前版本暂不开放内嵌窗口。");
-      return false;
-    }
     var dashboardUrl = _isTrustedDashboardNavigation(url) ? String(url) : "https://dash.immersivetranslate.com/#general";
     var BrowserWindow = this._getBrowserWindow();
     if (!BrowserWindow) { new obsidian.Notice("无法创建 Obsidian 内嵌登录窗口，已取消打开；不会跳转到系统浏览器。"); return false; }
@@ -4737,7 +5262,25 @@ var IMTExtendedPlugin = (function () {
         "(function(){try{return window.__imt_sync_data||(window.__imt_build_sync_snapshot?JSON.stringify(window.__imt_build_sync_snapshot()):null)}catch(e){return null}})()"
       ).then(function (dataStr) {
         if (!pluginInstance._isActiveSyncGeneration(generation) || pluginInstance._dashboardWindow !== dashboardWindow) return false;
-        if (dataStr) return pluginInstance._applySyncData(dataStr, generation, SYNC_SCOPE_DASHBOARD);
+        if (dataStr) {
+          try {
+            var parsed = typeof dataStr === "string" ? JSON.parse(dataStr) : dataStr;
+            if (parsed && parsed.values && typeof parsed.values === "object" && !Array.isArray(parsed.values)) {
+              var ackHash = typeof parsed.hash === "string" ? parsed.hash : "";
+              delete parsed.values[GM_STORE_PREFIX + IMT_CONFIG_KEY];
+              delete parsed.values[IMT_CONFIG_KEY];
+              if (Array.isArray(parsed.deletedKeys)) {
+                parsed.deletedKeys = parsed.deletedKeys.filter(function (key) {
+                  return key !== GM_STORE_PREFIX + IMT_CONFIG_KEY && key !== IMT_CONFIG_KEY;
+                });
+              }
+              parsed.hash = _hashSyncPayload(parsed.values, parsed.deletedKeys || []);
+              if (ackHash) parsed.ackHash = ackHash;
+              dataStr = JSON.stringify(parsed);
+            }
+          } catch (e) {}
+          return pluginInstance._applySyncData(dataStr, generation, SYNC_SCOPE_DASHBOARD);
+        }
         return false;
       }).catch(function () {}).then(function () {
         if (pluginInstance._syncGeneration === generation) pluginInstance._syncReadInFlight = false;
@@ -4777,6 +5320,9 @@ var IMTExtendedPlugin = (function () {
     return {
       revision: String(envelope.revision || "legacy").slice(0, 128),
       hash: envelope.hash || _hashSyncPayload(envelope.values, rawDeleted),
+      ackHash: typeof envelope.ackHash === "string" && envelope.ackHash
+        ? envelope.ackHash
+        : (envelope.hash || _hashSyncPayload(envelope.values, rawDeleted)),
       scope: scope,
       values: values,
       deletedKeys: Object.keys(deletedKeys),
@@ -4859,18 +5405,18 @@ var IMTExtendedPlugin = (function () {
     if (snapshot.skipped > 0) console.warn("[IMT-Extended] Skipped " + snapshot.skipped + " unsafe or oversized sync entries");
     if (changed > 0) new obsidian.Notice(isDashboardScope ? "已同步 " + changed + " 项账户或高级设置" : "已导入 " + changed + " 项安全配置");
     else if (snapshot.skipped === 0) new obsidian.Notice(isDashboardScope ? "账户与高级设置已是最新" : "配置已是最新");
-    this._ackSyncSnapshot(snapshot.hash, generation);
+    this._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation);
     return changed > 0;
   };
 
   IMTExtendedPluginClass.prototype._queueSyncSnapshot = function (snapshot, generation) {
     if (generation === undefined) generation = this._syncGeneration;
     if (!this._isActiveSyncGeneration(generation)) return Promise.resolve(false);
-    if (snapshot.hash === this._lastSyncHash) { this._ackSyncSnapshot(snapshot.hash, generation); return Promise.resolve(false); }
+    if (snapshot.hash === this._lastSyncHash) { this._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return Promise.resolve(false); }
     var pluginInstance = this;
     this._syncApplyChain = this._syncApplyChain.catch(function () {}).then(function () {
       if (!pluginInstance._isActiveSyncGeneration(generation)) return false;
-      if (snapshot.hash === pluginInstance._lastSyncHash) { pluginInstance._ackSyncSnapshot(snapshot.hash, generation); return false; }
+      if (snapshot.hash === pluginInstance._lastSyncHash) { pluginInstance._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return false; }
       return Promise.resolve(pluginInstance._commitSyncSnapshot(snapshot, generation)).then(function (result) {
         if (result !== null) pluginInstance._lastSyncHash = snapshot.hash;
         return result === true;
@@ -5174,13 +5720,18 @@ var IMTExtendedPlugin = (function () {
     return true;
   };
 
+  IMTExtendedPluginClass.prototype._windowRuntimeRecord = function (runtimeWindow) {
+    return this._windowRuntimeLedger.ensure(runtimeWindow || window);
+  };
+
   IMTExtendedPluginClass.prototype._installGMPolyfill = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
     var runtimeDocument = runtimeWindow.document || document;
     var runtimeStorage = runtimeWindow.localStorage || localStorage;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    if (record.gmPolyfill) return;
     if (runtimeWindow._imtGMPolyfillInstalled && runtimeWindow.GM) return;
-    if (runtimeWindow === window && this._gmPolyfillsInstalled) return;
-    if (runtimeWindow === window) this._gmPolyfillsInstalled = true;
+    record.gmPolyfill = true;
     var pluginInstance = this; var _requestUrl = obsidian.requestUrl;
     var _gmXmlHttpRequest = function (opts) {
       opts = opts || {};
@@ -5270,9 +5821,13 @@ var IMTExtendedPlugin = (function () {
       return id;
     };
     var gmRemoveValueChangeListener = function (id) { delete pluginInstance._gmValueChangeListeners[id]; };
-    var gmAddStyle = function (c) { var s = runtimeDocument.createElement("style"); s.textContent = c; s._imtHostRuntimeWindow = runtimeWindow === window ? null : runtimeWindow; runtimeDocument.head.appendChild(s); pluginInstance._gmStyleElements.push(s); return s; };
+    var gmElementApi = createGmElementApi(function () { return runtimeDocument; }, function (el) {
+      el._imtHostRuntimeWindow = runtimeWindow === window ? null : runtimeWindow;
+      pluginInstance._gmStyleElements.push(el);
+    });
+    var gmAddElement = gmElementApi.addElement;
+    var gmAddStyle = gmElementApi.addStyle;
     var gmRegisterMenuCommand = function () { return 0; };
-    var gmAddElement = function () { return null; };
     var gmObject = { info: gmInfo, getValue: gmGetValue, setValue: gmSetValue, deleteValue: gmDeleteValue, listValues: gmListValues, addValueChangeListener: gmAddValueChangeListener, removeValueChangeListener: gmRemoveValueChangeListener, xmlHttpRequest: _gmXmlHttpRequest, addStyle: gmAddStyle, openInTab: _gmOpenInTab, registerMenuCommand: gmRegisterMenuCommand, addElement: gmAddElement };
     this._patchGlobal(runtimeWindow, "_imtGMPolyfillInstalled", true);
     this._patchGlobal(runtimeWindow, "GM_xmlhttpRequest", _gmXmlHttpRequest);
@@ -5297,9 +5852,11 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._installBrowserAPIPolyfill = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
-    if ((runtimeWindow === window && this._browserAPIPolyfillInstalled) || (runtimeWindow.immersiveTranslateBrowserAPI && !runtimeWindow._imtBrowserAPIPolyfillInstalled)) return;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    if (runtimeWindow.immersiveTranslateBrowserAPI && !runtimeWindow._imtBrowserAPIPolyfillInstalled) return;
+    if (record.browserPolyfill) return;
     if (runtimeWindow._imtBrowserAPIPolyfillInstalled && runtimeWindow.immersiveTranslateBrowserAPI) return;
-    if (runtimeWindow === window) this._browserAPIPolyfillInstalled = true;
+    record.browserPolyfill = true;
     var pluginInstance = this;
     var Q8 = { get: async function (e) { var gm = runtimeWindow.GM; if (e === null) { var r = await gm.listValues(); if (!Array.isArray(r)) r = Object.keys(r); var i = {}; for (var a of r) i[a] = await gm.getValue(a); return i; } var t = []; if (typeof e == "string") t = [e]; else if (Array.isArray(e)) t = e; else t = Object.keys(e); var n = {}; for (var r of t) n[r] = await gm.getValue(r); return n; }, set: async function (e) { for (var t in e) await runtimeWindow.GM.setValue(t, e[t]); }, remove: async function (e) { if (typeof e == "string") await runtimeWindow.GM.deleteValue(e); else if (Array.isArray(e)) for (var t of e) await runtimeWindow.GM.deleteValue(t); } };
     var storageOnChanged = {
@@ -5352,8 +5909,10 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._installGMFetchPolyfill = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
-    if ((runtimeWindow === window && this._gmFetchPolyfillInstalled) || (runtimeWindow.GM_fetch && runtimeWindow.GM_fetch._imtPolyfill)) return;
-    if (runtimeWindow === window) this._gmFetchPolyfillInstalled = true;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    if (record.gmFetchPolyfill) return;
+    if (runtimeWindow.GM_fetch && runtimeWindow.GM_fetch._imtPolyfill) return;
+    record.gmFetchPolyfill = true;
     var gmFetch = function (input, init) {
       return new Promise(async function (resolve, reject) {
         var request; var body; var requestHandle = null; var abortListener = null; var completed = false;
@@ -5493,23 +6052,7 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._getActiveTranslationState = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
-    var runtimeDocument = runtimeWindow.document || document;
-    try {
-      var state = runtimeDocument.documentElement && String(runtimeDocument.documentElement.getAttribute("imt-state") || "").trim();
-      if (state === "dual" || state === "translation") return state;
-      var popup = runtimeDocument.querySelector && runtimeDocument.querySelector("#immersive-translate-popup");
-      if (popup && popup.shadowRoot && popup.shadowRoot.querySelector(".imt-fb-btn.active")) return "dual";
-    } catch (e) {}
-    return "";
-  };
-
-  IMTExtendedPluginClass.prototype._dispatchUserscriptMiniConfig = function (config) {
-    if (!this._isEngineLoaded()) return false;
-    var data = this._buildUserscriptMiniConfigData(config);
-    try {
-      document.dispatchEvent(new CustomEvent(DOCUMENT_REQUEST_EVENT, { detail: JSON.stringify({ id: "obsidian-config-" + Date.now(), type: "setMiniConfigAsync", data: data }) }));
-      return true;
-    } catch (e) { return false; }
+    return readActiveTranslationState(runtimeWindow.document || document);
   };
 
   IMTExtendedPluginClass.prototype._buildUserscriptMiniConfigData = function (config) {
@@ -5523,19 +6066,10 @@ var IMTExtendedPlugin = (function () {
     return data;
   };
 
-  IMTExtendedPluginClass.prototype._dispatchUserscriptThemeConfig = function (config) {
-    if (!this._isEngineLoaded()) return false;
-    var data = this._buildUserscriptThemeConfigData(config);
-    try {
-      document.dispatchEvent(new CustomEvent(DOCUMENT_REQUEST_EVENT, { detail: JSON.stringify({ id: "obsidian-theme-" + Date.now(), type: "updateTranslationThemeConfig", data: data }) }));
-      return true;
-    } catch (e) { return false; }
-  };
-
   IMTExtendedPluginClass.prototype._dispatchUserscriptTranslationMode = function (mode, targetWindow) {
     var runtimeWindow = targetWindow || window;
     var runtimeDocument = runtimeWindow.document || document;
-    if (!this._isEngineLoaded(runtimeWindow) || (mode !== "dual" && mode !== "translation")) return false;
+    if (!this._isEngineLoaded(runtimeWindow) || !isActiveTranslationState(mode)) return false;
     var data = { translationMode: mode, remember: false, triggerSource: "obsidianHost" };
     try {
       var RuntimeCustomEvent = runtimeWindow.CustomEvent || CustomEvent;
@@ -5588,10 +6122,7 @@ var IMTExtendedPlugin = (function () {
     var requestId = "obsidian-runtime-" + Date.now() + "-" + (++this._userscriptRequestSequence);
     var RuntimeCustomEvent = runtimeWindow.CustomEvent || CustomEvent;
     if (typeof runtimeDocument.addEventListener !== "function" || typeof runtimeDocument.removeEventListener !== "function") {
-      try {
-        runtimeDocument.dispatchEvent(new RuntimeCustomEvent(DOCUMENT_REQUEST_EVENT, { detail: JSON.stringify({ id: requestId, type: type, data: data }) }));
-        return Promise.resolve(true);
-      } catch (e) { return Promise.resolve(false); }
+      return Promise.resolve(false);
     }
     return new Promise(function (resolve) {
       var settled = false; var timeoutId = null;
@@ -5801,6 +6332,11 @@ var IMTExtendedPlugin = (function () {
     }
     this._refreshUserscriptRuntime(config || {}, true, previousConfigState.valid ? previousConfigState.value : null);
     this._pushConfigToDashboard(config || undefined);
+    if (key === "uiTranslateEnabled") this._syncHostSurfacePokeObserver();
+    if (key === "articleTranslateEnabled") {
+      if (this.settings.articleTranslateEnabled) this._startTranslationViewBridge();
+      else this._stopTranslationViewBridge();
+    }
     new obsidian.Notice("翻译范围已实时更新");
     return true;
   };
@@ -5849,6 +6385,10 @@ var IMTExtendedPlugin = (function () {
   };
 
   IMTExtendedPluginClass.prototype._startTranslationViewBridge = function () {
+    if (!this.settings.articleTranslateEnabled) {
+      this._stopTranslationViewBridge();
+      return false;
+    }
     if (this._translationViewBridge) return this._translationViewBridge.start();
     try {
       this._translationViewBridge = createTranslationViewBridge({
@@ -5867,14 +6407,10 @@ var IMTExtendedPlugin = (function () {
     }
   };
 
-  IMTExtendedPluginClass.prototype._isHostPopoutWindow = function (runtimeWindow) {
-    try {
-      var runtimeDocument = runtimeWindow && runtimeWindow.document;
-      var body = runtimeDocument && runtimeDocument.body;
-      if (!body) return false;
-      if (body.classList && body.classList.contains("is-popout-modal")) return true;
-      return !!(runtimeDocument.querySelector && runtimeDocument.querySelector(".mod-settings, .mod-community-plugin, .mod-community-theme"));
-    } catch (e) { return false; }
+  IMTExtendedPluginClass.prototype._stopTranslationViewBridge = function () {
+    if (!this._translationViewBridge) return;
+    this._translationViewBridge.stop();
+    this._translationViewBridge = null;
   };
 
   IMTExtendedPluginClass.prototype._startHostWindowRuntimeManager = function () {
@@ -5884,7 +6420,8 @@ var IMTExtendedPlugin = (function () {
     }
     var pluginInstance = this;
     this._hostWindowRuntimeManager = createHostWindowRuntimeManager({
-      isHostWindow: function (runtimeWindow) { return pluginInstance._isHostPopoutWindow(runtimeWindow); },
+      ledger: pluginInstance._windowRuntimeLedger,
+      isHostWindow: isHostPopoutWindow,
       activate: function (runtimeWindow) { return pluginInstance._activateHostWindowRuntime(runtimeWindow); },
       deactivate: function (runtimeWindow) { pluginInstance._deactivateHostWindowRuntime(runtimeWindow); },
     });
@@ -5921,19 +6458,6 @@ var IMTExtendedPlugin = (function () {
       } catch (e) {}
     });
     return touched;
-  };
-
-  IMTExtendedPluginClass.prototype._isHostSurfaceNode = function (node) {
-    var current = node;
-    while (current && current.nodeType === 1 && current !== document.body) {
-      if (current.classList) {
-        for (var i = 0; i < HOST_SURFACE_CLASS_NAMES.length; i++) {
-          if (current.classList.contains(HOST_SURFACE_CLASS_NAMES[i])) return true;
-        }
-      }
-      current = current.parentNode;
-    }
-    return false;
   };
 
   IMTExtendedPluginClass.prototype._preferredUserscriptTranslationMode = function () {
@@ -5980,52 +6504,34 @@ var IMTExtendedPlugin = (function () {
     return true;
   };
 
-  IMTExtendedPluginClass.prototype._startHostSurfaceTranslationObserver = function () {
-    if (this._hostSurfaceObserver || typeof MutationObserver !== "function" || !document || !document.body) return false;
-    var pluginInstance = this;
-    this._hostSurfaceObserver = new MutationObserver(function (mutations) {
-      var stateChanged = false;
-      for (var stateIndex = 0; stateIndex < mutations.length; stateIndex++) {
-        if (mutations[stateIndex].type === "attributes" && mutations[stateIndex].target === document.documentElement && mutations[stateIndex].attributeName === "imt-state") {
-          stateChanged = true;
-          break;
-        }
-      }
-      if (stateChanged) pluginInstance._syncHostWindowTranslationState();
-      if (!pluginInstance.settings.uiTranslateEnabled) return;
-      var shouldPoke = false;
-      for (var i = 0; i < mutations.length && !shouldPoke; i++) {
-        var added = mutations[i].addedNodes;
-        for (var n = 0; n < added.length; n++) {
-          if (pluginInstance._isHostSurfaceNode(added[n])) { shouldPoke = true; break; }
-        }
-      }
-      if (!shouldPoke) return;
-      if (pluginInstance._hostSurfacePokeTimer) clearTimeout(pluginInstance._hostSurfacePokeTimer);
-      pluginInstance._hostSurfacePokeTimer = setTimeout(function () {
-        pluginInstance._hostSurfacePokeTimer = null;
-        pluginInstance._pokeHostSurfaceTranslation();
-      }, 160);
-    });
-    try {
-      this._hostSurfaceObserver.observe(document.body, { childList: true, subtree: true });
-      if (document.documentElement) this._hostSurfaceObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["imt-state"] });
-      return true;
-    } catch (e) {
-      this._hostSurfaceObserver = null;
+  IMTExtendedPluginClass.prototype._syncHostSurfacePokeObserver = function () {
+    if (!this._hostWindowRuntimeManager) return false;
+    if (!this.settings.uiTranslateEnabled) {
+      this._hostWindowRuntimeManager.unwatchHostSurfaces();
       return false;
     }
+    var pluginInstance = this;
+    return this._hostWindowRuntimeManager.watchHostSurfaces({
+      document: document,
+      poke: function () { pluginInstance._pokeHostSurfaceTranslation(); },
+    });
+  };
+
+  IMTExtendedPluginClass.prototype._startHostSurfaceTranslationObserver = function () {
+    if (!this._hostWindowRuntimeManager) return false;
+    var pluginInstance = this;
+    var watchedState = this._hostWindowRuntimeManager.watchTranslationState({
+      document: document,
+      onStateChange: function () { pluginInstance._syncHostWindowTranslationState(); },
+    });
+    var watchedSurfaces = this._syncHostSurfacePokeObserver();
+    return watchedState || watchedSurfaces;
   };
 
   IMTExtendedPluginClass.prototype._stopHostSurfaceTranslationObserver = function () {
-    if (this._hostSurfacePokeTimer) {
-      clearTimeout(this._hostSurfacePokeTimer);
-      this._hostSurfacePokeTimer = null;
-    }
-    if (this._hostSurfaceObserver) {
-      try { this._hostSurfaceObserver.disconnect(); } catch (e) {}
-      this._hostSurfaceObserver = null;
-    }
+    if (!this._hostWindowRuntimeManager) return;
+    this._hostWindowRuntimeManager.unwatchHostSurfaces();
+    this._hostWindowRuntimeManager.unwatchTranslationState();
   };
 
   IMTExtendedPluginClass.prototype._notifyUserscriptConfigChange = function () {
@@ -6042,21 +6548,26 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._isEngineLoaded = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (record && record.engineLoaded) return true;
     try { return !!(runtimeWindow[_engineStateKey] && runtimeWindow[_engineStateKey].loaded && runtimeWindow[_engineStateKey].mode === "userscript"); } catch (e) { return false; }
   };
 
+  IMTExtendedPluginClass.prototype._markEngineLoaded = function (targetWindow) {
+    var runtimeWindow = targetWindow || window;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    record.engineLoaded = true;
+    if (this._loadedUserscriptVersion) record.userscriptVersion = this._loadedUserscriptVersion;
+    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion }; } catch (e) {}
+  };
+
   IMTExtendedPluginClass.prototype._setUserscriptRuntimeVersion = function (content) {
-    var version = _extractUserscriptVersion(content);
+    var version = extractRuntimeVersion(content);
     if (!version) return "";
     this._loadedUserscriptVersion = version;
     try { if (window.GM_info && window.GM_info.script) window.GM_info.script.version = version; } catch (e) {}
     try { if (window.GM && window.GM.info && window.GM.info.script) window.GM.info.script.version = version; } catch (e) {}
     return version;
-  };
-
-  IMTExtendedPluginClass.prototype._markEngineLoaded = function (targetWindow) {
-    var runtimeWindow = targetWindow || window;
-    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion }; } catch (e) {}
   };
 
   IMTExtendedPluginClass.prototype._applyRuntimeConfig = function (targetWindow) {
@@ -6131,6 +6642,7 @@ var IMTExtendedPlugin = (function () {
     try {
       if (runtimeWindow.self && runtimeWindow.self !== runtimeWindow) this._restoreGlobalPatchesForTarget(runtimeWindow.self);
     } catch (e) {}
+    this._windowRuntimeLedger.resetPolyfills(runtimeWindow);
   };
 
   IMTExtendedPluginClass.prototype._appendEngineScript = function (content, generation) {
@@ -6156,6 +6668,7 @@ var IMTExtendedPlugin = (function () {
       new obsidian.Notice("沉浸式翻译运行时已更新，请重启 Obsidian 完成加载。");
       return false;
     }
+    this._adoptSurvivingEngineVersion();
     var mainEngineWasLoaded = this._isEngineLoaded();
     this._installGMPolyfill(); this._installBrowserAPIPolyfill(); this._installGMFetchPolyfill();
     var scriptContent = await this._ensureUserscript(generation);
@@ -6181,11 +6694,11 @@ var IMTExtendedPlugin = (function () {
     }
     var hostBridgePatch = patchUserscriptHostContentBridge(scriptContent);
     scriptContent = hostBridgePatch.source;
-    if (!hostBridgePatch.changed && hostBridgePatch.reason !== "already-patched" && this._isDashboardEmbeddedEnabled()) {
+    if (!hostBridgePatch.changed && hostBridgePatch.reason !== "already-patched") {
       console.warn("[IMT-Extended] Userscript host-content compatibility patch skipped: " + hostBridgePatch.reason);
       new obsidian.Notice("当前沉浸式翻译运行时暂不支持 Dashboard 热同步；语言和翻译服务请在悬浮球中确认。");
     }
-    this._setUserscriptRuntimeVersion(scriptContent);
+    if (!this._isEngineLoaded()) this._setUserscriptRuntimeVersion(scriptContent);
     this._hostWindowUserscriptSource = scriptContent;
     if (this._isEngineLoaded()) {
       if (this._hostWindowRuntimeManager) this._hostWindowRuntimeManager.refresh();
@@ -6208,7 +6721,7 @@ var IMTExtendedPlugin = (function () {
     this._gmStyleElements = [];
   };
 
-  function _renderAccountStatus(container, dashboardEnabled, plugin) {
+  function _renderAccountStatus(container, plugin) {
     var bar = container.createDiv({ cls: "imt-account-bar" });
     var avatar = bar.createDiv({ cls: "imt-account-avatar" });
     var info = bar.createDiv({ cls: "imt-account-info" });
@@ -6226,11 +6739,11 @@ var IMTExtendedPlugin = (function () {
     } else if (token) {
       avatar.textContent = "\u2713";
       info.createDiv({ cls: "imt-account-name", text: "已登录" });
-      info.createDiv({ cls: "imt-account-status", text: dashboardEnabled ? "可在下方打开 Dashboard 管理账户" : "当前已保存授权会话" });
+      info.createDiv({ cls: "imt-account-status", text: "可在下方打开 Dashboard 管理账户" });
     } else {
       avatar.textContent = "?";
       info.createDiv({ cls: "imt-account-name", text: "未登录" });
-      info.createDiv({ cls: "imt-account-status", text: dashboardEnabled ? "可在下方打开 Dashboard 登录" : "当前未检测到已保存的账户信息" });
+      info.createDiv({ cls: "imt-account-status", text: "可在下方打开 Dashboard 登录" });
     }
   }
 
@@ -6269,31 +6782,49 @@ var IMTExtendedPlugin = (function () {
     if (!existingImportInput) existingImportInput = findDraftInput(containerEl);
     var preservedImportValue = existingImportInput && typeof existingImportInput.value === "string" ? existingImportInput.value : "";
     containerEl.empty(); var self = this;
-    var dashboardEnabled = self.plugin._isDashboardEmbeddedEnabled();
+    self.plugin._runtimeSettingsTab = self;
     containerEl.createEl("h2", { text: "沉浸式翻译延伸版设置" });
     containerEl.createEl("h3", { text: "翻译运行时" });
     var runtimeStatus = self.plugin._getRuntimeStatus();
+    var installing = !!runtimeStatus.installPhase;
     var runtimeDescription = runtimeStatus.installed ? "本机已安装 v" + runtimeStatus.version : "本机尚未安装";
-    if (runtimeStatus.latestState === "checking") runtimeDescription += "；正在检查官方当前版本…";
+    if (runtimeStatus.loadedVersion && runtimeStatus.loadedVersion !== runtimeStatus.version) {
+      runtimeDescription += "；当前已加载 v" + runtimeStatus.loadedVersion;
+    }
+    if (runtimeStatus.restartRequired) runtimeDescription += "，重启后使用磁盘版本";
+    if (installing) {
+      var phaseText = runtimeStatus.installPhase === "downloading" ? "正在下载官方运行时…"
+        : runtimeStatus.installPhase === "verifying" ? "正在校验脚本版本…"
+        : runtimeStatus.installPhase === "writing" ? "正在写入本机文件…"
+        : runtimeStatus.installPhase === "activating" ? "正在启用运行时…"
+        : "正在安装运行时…";
+      runtimeDescription += "；" + phaseText;
+    } else if (runtimeStatus.installError) runtimeDescription += "；上次安装失败，可重试";
+    else if (runtimeStatus.latestState === "checking") runtimeDescription += "；正在检查官方当前版本…";
     else if (runtimeStatus.latestState === "error") runtimeDescription += "；暂时无法获取官方当前版本";
     else if (runtimeStatus.latestVersion) {
       runtimeDescription += "；官方当前版本 v" + runtimeStatus.latestVersion;
       if (runtimeStatus.installed && runtimeStatus.version === runtimeStatus.latestVersion) runtimeDescription += "，本机已是当前版本";
     }
     else runtimeDescription += "；即将检查官方当前版本";
-    var runtimeIsCurrent = runtimeStatus.installed && runtimeStatus.latestState === "available" &&
+    var runtimeIsCurrent = !installing && runtimeStatus.installed && runtimeStatus.latestState === "available" &&
       runtimeStatus.latestVersion && runtimeStatus.version === runtimeStatus.latestVersion;
     new obsidian.Setting(containerEl).setName(runtimeStatus.installed ? "运行时 v" + runtimeStatus.version : "安装翻译运行时").setDesc(runtimeDescription).addButton(function (b) {
-      b.setButtonText(runtimeIsCurrent ? "已是最新版本" : runtimeStatus.installed ? "更新运行时" : "安装运行时");
-      if (typeof b.setDisabled === "function") b.setDisabled(!!runtimeIsCurrent);
-      if (runtimeIsCurrent || typeof b.onClick !== "function") return;
+      var buttonText = installing ? (runtimeStatus.installed ? "正在更新…" : "正在安装…")
+        : runtimeIsCurrent ? "已是最新版本"
+        : runtimeStatus.installed ? "更新运行时"
+        : "安装运行时";
+      b.setButtonText(buttonText);
+      if (typeof b.setDisabled === "function") b.setDisabled(!!runtimeIsCurrent || installing);
+      if (runtimeIsCurrent || installing || typeof b.onClick !== "function") return;
       b.onClick(function () {
-        Promise.resolve(self.plugin._installRuntimeFromOfficialSource()).then(function (result) {
-          if (result && result.ok) self.display();
+        if (typeof b.setDisabled === "function") b.setDisabled(true);
+        Promise.resolve(self.plugin._installRuntimeFromOfficialSource()).then(function () {
+          if (!self.plugin._isUnloaded) self.display();
         });
       });
     });
-    if (self.plugin._shouldCheckLatestRuntimeVersion()) {
+    if (!installing && self.plugin._shouldCheckLatestRuntimeVersion()) {
       Promise.resolve(self.plugin._checkLatestRuntimeVersion()).then(function () {
         if (!self.plugin._isUnloaded) self.display();
       });
@@ -6302,10 +6833,8 @@ var IMTExtendedPlugin = (function () {
     new obsidian.Setting(containerEl).setName("界面翻译范围").setDesc("翻译菜单、侧栏、设置和通知；关闭后立即清理这些区域的译文").addToggle(function (t) { t.setValue(self.plugin.settings.uiTranslateEnabled).onChange(function (v) { self.plugin._setTranslationScopeSetting("uiTranslateEnabled", v); }); });
     new obsidian.Setting(containerEl).setName("正文翻译范围").setDesc("翻译阅读视图正文；Markdown 编辑器始终受到保护，切换会实时生效").addToggle(function (t) { t.setValue(self.plugin.settings.articleTranslateEnabled).onChange(function (v) { self.plugin._setTranslationScopeSetting("articleTranslateEnabled", v); }); });
     containerEl.createEl("h3", { text: "账户与高级设置" });
-    _renderAccountStatus(containerEl, dashboardEnabled, this.plugin);
-    if (dashboardEnabled) {
-      new obsidian.Setting(containerEl).setName("沉浸式翻译 Dashboard").setDesc("登录、账户管理，以及译文样式、字体、鼠标悬停等完整高级设置").addButton(function (b) { b.setButtonText("打开 Dashboard").onClick(function () { self.plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general"); }); }).addButton(function (b) { b.setButtonText("从已打开的 Dashboard 同步").onClick(function () { self.plugin._syncDashboardConfig(); }); });
-    }
+    _renderAccountStatus(containerEl, this.plugin);
+    new obsidian.Setting(containerEl).setName("沉浸式翻译 Dashboard").setDesc("登录、账户管理，以及译文样式、字体、鼠标悬停等完整高级设置").addButton(function (b) { b.setButtonText("打开 Dashboard").onClick(function () { self.plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general"); }); }).addButton(function (b) { b.setButtonText("从已打开的 Dashboard 同步").onClick(function () { self.plugin._syncDashboardConfig(); }); });
     containerEl.createEl("h3", { text: "安全配置迁移" });
     new obsidian.Setting(containerEl).setName("导出安全配置").setDesc("复制经过筛选的设置；凭据、令牌、API 密钥和密码不会进入导出内容").addButton(function (b) { b.setButtonText("导出安全配置").onClick(function () {
       var value = self.plugin._exportConfig();

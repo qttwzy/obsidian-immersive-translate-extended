@@ -6,13 +6,17 @@ const { spawnSync } = require("node:child_process");
 
 const ROOT = path.join(__dirname, "..");
 const FILES = [
+  "plugin/dashboard-preload.entry.js",
   "plugin/dashboard-preload.js",
   "plugin/document-preload.js",
   "plugin/document-runtime.js",
+  "plugin/document-session.js",
   "plugin/main.entry.js",
   "plugin/main.js",
   "plugin/runtime-contract.js",
   "plugin/runtime-installer.js",
+  "plugin/sync-protocol.js",
+  "plugin/translation-state.js",
   "scripts/build-plugin.js",
   "scripts/check-syntax.js",
   "scripts/package-plugin.js",

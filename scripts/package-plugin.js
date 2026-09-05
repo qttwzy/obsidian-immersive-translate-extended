@@ -12,6 +12,8 @@ const PACKAGE_FILES = [
   ["plugin/dashboard-preload.js", "dashboard-preload.js"],
   ["plugin/document-preload.js", "document-preload.js"],
   ["plugin/document-runtime.js", "document-runtime.js"],
+  ["plugin/gm-element.js", "gm-element.js"],
+  ["plugin/gm-headers.js", "gm-headers.js"],
   ["plugin/main.js", "main.js"],
   ["plugin/manifest.json", "manifest.json"],
   ["plugin/styles.css", "styles.css"],
