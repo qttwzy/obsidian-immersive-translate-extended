@@ -1796,6 +1796,25 @@ test("a legacy secondary engine already running in memory requires a clean Obsid
   assert.match(noticeMessages.at(-1), /重启 Obsidian/);
 });
 
+test("a reloaded plugin prepares the host-popout source without reinjecting the running main runtime", async () => {
+  const { body } = setupRuntime();
+  const plugin = makePlugin();
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript" };
+  plugin._ensureUserscript = async function () {
+    return "// @version 1.32.8\nwindow.__imt_test_script_ran__ = true;";
+  };
+  let refreshes = 0;
+  plugin._hostWindowRuntimeManager = {
+    forEachActive() {},
+    refresh() { refreshes++; },
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  assert.equal(body.children.length, 0);
+  assert.match(plugin._hostWindowUserscriptSource, /__imt_test_script_ran__/);
+  assert.equal(refreshes, 1);
+});
+
 test("userscript activation reads the locally installed runtime without a network request", async (t) => {
   setupRuntime();
   const plugin = makePlugin();
@@ -1939,7 +1958,7 @@ test("userscript activation reports the version parsed from the script it actual
   assert.equal(window.GM_info.script.version, "1.32.7");
   assert.equal(window.GM.info.script.version, "1.32.7");
   assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest().version, "1.32.7");
-  assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest()._imtBridgeVersion, "4.0.1");
+  assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest()._imtBridgeVersion, "4.0.2");
   assert.equal(window.__imt_extend_engine_state__.userscriptVersion, "1.32.7");
 });
 
@@ -2070,6 +2089,191 @@ test("host surface poke starts page translation when the host is still original"
   assert.deepEqual(types, ["obsidianHostTranslatePage"]);
 });
 
+test("host surface poke targets the independent popout document and mirrors the main translation state", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  const childWindow = { immersiveTranslateSwitchTranslateState() {} };
+  plugin._isEngineLoaded = (runtimeWindow) => runtimeWindow === childWindow;
+  plugin._getActiveTranslationState = (runtimeWindow) => runtimeWindow === window ? "dual" : "";
+  const modes = [];
+  const messages = [];
+  plugin._dispatchUserscriptTranslationMode = (mode, runtimeWindow) => { modes.push({ mode, runtimeWindow }); return true; };
+  plugin._requestUserscriptDocumentMessage = (type, data, runtimeWindow) => { messages.push({ type, runtimeWindow }); };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin._scheduleTimeout = (callback) => { callback(); return 1; };
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(childWindow), true);
+  assert.deepEqual(modes, [{ mode: "dual", runtimeWindow: childWindow }]);
+  assert.deepEqual(messages, [{ type: "obsidianHostTranslatePage", runtimeWindow: childWindow }]);
+});
+
+test("an independent popout stays original while the main window is not translated", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  const restored = [];
+  const childWindow = {
+    immersiveTranslateSwitchTranslateState(state) { restored.push(state); },
+  };
+  plugin._isEngineLoaded = (runtimeWindow) => runtimeWindow === childWindow;
+  plugin._getActiveTranslationState = () => "";
+  const modes = [];
+  const messages = [];
+  plugin._dispatchUserscriptTranslationMode = (mode, runtimeWindow) => { modes.push({ mode, runtimeWindow }); return true; };
+  plugin._requestUserscriptDocumentMessage = (type, data, runtimeWindow) => { messages.push({ type, runtimeWindow }); };
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(childWindow), true);
+  assert.deepEqual(restored, ["original"]);
+  assert.deepEqual(modes, []);
+  assert.deepEqual(messages, []);
+});
+
+test("activates an independent userscript runtime inside an Obsidian host popout", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._hostWindowUserscriptSource = "window.__imt_test_script_ran__ = true;";
+  const childBody = makeElement("body");
+  const childHead = makeElement("head");
+  const childDocument = {
+    body: childBody,
+    head: childHead,
+    documentElement: makeElement("html"),
+    createElement: makeElement,
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    querySelector() { return null; },
+  };
+  const childWindow = {
+    document: childDocument,
+    localStorage,
+    navigator,
+    Request: globalThis.Request,
+    Response: globalThis.Response,
+    Headers: globalThis.Headers,
+    DOMException: globalThis.DOMException,
+    CustomEvent,
+    location: { href: "about:blank" },
+  };
+  childWindow.self = childWindow;
+  childWindow.window = childWindow;
+  const poked = [];
+  plugin._pokeHostSurfaceTranslation = (runtimeWindow) => { poked.push(runtimeWindow); return true; };
+
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), true);
+  assert.equal(typeof childWindow.GM_getValue, "function");
+  assert.equal(typeof childWindow.GM_fetch, "function");
+  assert.ok(childWindow.IMMERSIVE_TRANSLATE_CONFIG);
+  assert.equal(childWindow.__imt_extend_engine_state__.loaded, true);
+  assert.equal(childBody.children.at(-1).textContent, plugin._hostWindowUserscriptSource);
+
+  const mainHeadSize = document.head.children.length;
+  childWindow.GM_addStyle(".translated { color: green; }");
+  assert.equal(document.head.children.length, mainHeadSize);
+  assert.equal(childHead.children.at(-1).textContent, ".translated { color: green; }");
+  assert.deepEqual(poked, [childWindow]);
+
+  let storageNotifications = 0;
+  childWindow.GM_addValueChangeListener("listener-probe", () => { storageNotifications++; });
+  childWindow.immersiveTranslateBrowserAPI.storage.onChanged.addListener(() => { storageNotifications++; });
+  plugin._emitUserscriptStorageChange("listener-probe", 0, 1, false);
+  assert.equal(storageNotifications, 2);
+
+  plugin._deactivateHostWindowRuntime(childWindow);
+  assert.equal(childWindow.GM_getValue, undefined);
+  assert.equal(childWindow.IMMERSIVE_TRANSLATE_CONFIG, undefined);
+  assert.equal(childBody.children.length, 0);
+  assert.equal(childHead.children.length, 0);
+  plugin._emitUserscriptStorageChange("listener-probe", 1, 2, false);
+  assert.equal(storageNotifications, 2);
+});
+
+test("host popout activation rolls back globals when script injection fails", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._hostWindowUserscriptSource = "window.__imt_test_script_ran__ = true;";
+  const childBody = makeElement("body");
+  childBody.append = function () { throw new Error("append failed"); };
+  const childDocument = {
+    body: childBody,
+    head: makeElement("head"),
+    documentElement: makeElement("html"),
+    createElement: makeElement,
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    querySelector() { return null; },
+  };
+  const childWindow = {
+    document: childDocument,
+    localStorage,
+    navigator,
+    Request: globalThis.Request,
+    Response: globalThis.Response,
+    Headers: globalThis.Headers,
+    DOMException: globalThis.DOMException,
+    CustomEvent,
+    location: { href: "about:blank" },
+  };
+  childWindow.self = childWindow;
+  childWindow.window = childWindow;
+
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), false);
+  assert.equal(childWindow.GM_getValue, undefined);
+  assert.equal(childWindow.GM_fetch, undefined);
+  assert.equal(childWindow.IMMERSIVE_TRANSLATE_CONFIG, undefined);
+  assert.equal(childWindow.__imt_extend_engine_state__, undefined);
+  assert.equal(plugin._globalPatches.some((patch) => patch.target === childWindow), false);
+});
+
+test("host-window lifecycle manager adopts an already-open Settings popout", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const listeners = Object.create(null);
+  const childWindow = {
+    closed: false,
+    document: {
+      body: { classList: { contains(name) { return name === "is-popout-modal"; } } },
+      documentElement: {},
+      querySelector() { return null; },
+    },
+    MutationObserver: class MutationObserver {
+      observe() {}
+      disconnect() {}
+    },
+    addEventListener(name, callback) { listeners[name] = callback; },
+    removeEventListener(name) { delete listeners[name]; },
+  };
+  plugin.app.setting = { win: childWindow };
+  const activated = [];
+  plugin._activateHostWindowRuntime = (win) => { activated.push(win); return true; };
+
+  assert.equal(plugin._startHostWindowRuntimeManager(), true);
+  assert.deepEqual(activated, [childWindow]);
+
+  plugin._stopHostWindowRuntimeManager();
+  assert.equal(listeners.unload, undefined);
+});
+
+test("host-window state synchronization restores a popout when page translation stops", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const states = [];
+  const childWindow = {
+    immersiveTranslateSwitchTranslateState(state) { states.push(state); },
+  };
+  plugin._hostWindowRuntimeManager = {
+    forEachActive(callback) { callback(childWindow); },
+  };
+  plugin._getActiveTranslationState = (runtimeWindow) => runtimeWindow === window ? "" : "dual";
+
+  assert.equal(plugin._syncHostWindowTranslationState(), true);
+  assert.deepEqual(states, ["original"]);
+});
+
 test("runtime config drops dialog exclusions while interface translation is enabled", () => {
   setupRuntime();
   const plugin = makePlugin();
@@ -2088,6 +2292,29 @@ test("runtime config drops dialog exclusions while interface translation is enab
   assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes("[role=dialog]"), false);
   assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.additionalExcludeSelectors.includes(".modal"), false);
   assert.ok(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.additionalExcludeSelectors.includes(".keep-extra"));
+});
+
+test("runtime config is mirrored into every active host popout", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({
+    targetLanguage: "ja",
+    generalRule: {},
+  }));
+  const childWindow = {};
+  plugin._hostWindowRuntimeManager = {
+    forEachActive(callback) { callback(childWindow); },
+  };
+
+  plugin._applyRuntimeConfig();
+
+  assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.targetLanguage, "ja");
+  assert.equal(childWindow.IMMERSIVE_TRANSLATE_CONFIG.targetLanguage, "ja");
+  assert.deepEqual(
+    childWindow.IMMERSIVE_TRANSLATE_CONFIG.generalRule.selectors,
+    window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.selectors,
+  );
 });
 
 test("scope toggles persist host selectors and refresh the active userscript immediately", async () => {
@@ -2347,6 +2574,56 @@ test("runtime refresh updates target-language context before retranslating the a
       data: { triggerSource: "obsidianHost", translationTheme: "mask" },
     },
   ]);
+});
+
+test("runtime refresh propagates language, service, and mode changes to an open host popout", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  const childWindow = { document: {} };
+  plugin._hostWindowRuntimeManager = {
+    forEachActive(callback) { callback(childWindow); },
+  };
+  const appliedWindows = [];
+  const requests = [];
+  const modeChanges = [];
+  plugin._applyRuntimeConfig = (runtimeWindow) => { appliedWindows.push(runtimeWindow); };
+  plugin._notifyUserscriptConfigChange = () => true;
+  plugin._isEngineLoaded = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  plugin._requestUserscriptDocumentMessage = async (type, data, runtimeWindow) => {
+    requests.push({ type, data, runtimeWindow });
+    return true;
+  };
+  plugin._dispatchUserscriptTranslationMode = (mode, runtimeWindow) => {
+    modeChanges.push({ mode, runtimeWindow });
+    return true;
+  };
+  plugin._waitForUserscriptTranslationState = async () => true;
+
+  assert.equal(plugin._refreshUserscriptRuntime(
+    { targetLanguage: "ja", translationService: "microsoft", translationMode: "translation", translationTheme: "mask" },
+    true,
+    { targetLanguage: "zh-CN", translationService: "google", translationMode: "dual", translationTheme: "mask" },
+  ), true);
+  await plugin._configRuntimeChain;
+
+  assert.deepEqual(appliedWindows, [undefined, childWindow]);
+  assert.deepEqual(
+    requests.filter((request) => request.runtimeWindow === childWindow).map((request) => request.type),
+    [
+      "setMiniConfigAsync",
+      "updateTranslationThemeConfig",
+      "updateTranslationThemeConfig",
+      "obsidianHostUpdateTargetLanguage",
+      "obsidianHostTranslatePage",
+    ],
+  );
+  const translated = requests.find((request) => request.runtimeWindow === childWindow && request.type === "obsidianHostTranslatePage");
+  assert.equal(translated.data.targetLanguage, "ja");
+  assert.equal(translated.data.translationService, "microsoft");
+  assert.equal(translated.data.translationMode, "translation");
+  assert.ok(modeChanges.some((change) => change.mode === "translation" && change.runtimeWindow === childWindow));
 });
 
 test("rapid runtime refreshes serialize userscript writes and apply only the latest visible translation", async () => {
@@ -2704,6 +2981,21 @@ test("intercepts only exact HTTPS Dashboard destinations", () => {
   assert.equal(window.open("https://evil.example/?next=https://dash.immersivetranslate.com"), "opened");
   assert.equal(window.open("http://dash.immersivetranslate.com/#general"), "opened");
   assert.equal(openedDashboard.length, 1);
+});
+
+test("tracks the Window returned for an Obsidian about:blank popout", () => {
+  setupRuntime();
+  const popoutWindow = { document: {} };
+  window.open = function originalPopoutOpen() { return popoutWindow; };
+  const plugin = makePlugin();
+  const tracked = [];
+  plugin._hostWindowRuntimeManager = {
+    track(win) { tracked.push(win); return true; },
+  };
+  plugin._interceptNavigation();
+
+  assert.strictEqual(window.open("about:blank", "_blank", "popup,width=900,height=700"), popoutWindow);
+  assert.deepEqual(tracked, [popoutWindow]);
 });
 
 test("Dashboard window denies untrusted navigations and opens them externally", () => {

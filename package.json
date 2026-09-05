@@ -1,6 +1,6 @@
 {
   "name": "obsidian-immersive-translate-extended",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "private": true,
   "description": "Immersive Translate Extended Obsidian plugin",
   "main": "plugin/main.js",

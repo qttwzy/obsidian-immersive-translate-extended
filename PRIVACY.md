@@ -1,8 +1,8 @@
 # Privacy
 
-Last updated: 2026-09-01
+Last updated: 2026-09-05
 
-This notice describes Immersive Translate Extended 4.0.0 for Obsidian Desktop. The plugin is an unofficial community project and does not operate the translation services it connects to.
+This notice describes Immersive Translate Extended 4.0.2 for Obsidian Desktop. The plugin is an unofficial community project and does not operate the translation services it connects to.
 
 ## What leaves your device
 
@@ -11,7 +11,7 @@ Opening plugin settings requests the current script from `https://download.immer
 Translation is an intentional network action. Depending on the provider and runtime configuration, the following data may be sent to Immersive Translate endpoints and the selected translation provider:
 
 - Markdown text shown in Reading View;
-- selected text, hovered text, or Obsidian interface text chosen for translation;
+- selected text, hovered text, or Obsidian interface text chosen for translation, including text shown in host popout windows such as Settings and the community plugin or theme browsers;
 - the content and filename of a PDF handed off from the active Vault view, or a document you manually select in the official workspace;
 - translation settings such as source language, target language, mode, and provider;
 - normal network metadata such as IP address, request timing, and service authentication data.
@@ -28,7 +28,7 @@ The safe configuration export is user initiated. It limits accepted fields, item
 
 ## Project telemetry and diagnostics
 
-The 4.0.0 plugin code does not add a project-operated analytics or crash-reporting service. The user-installed runtime and chosen translation providers may perform their own service requests as described above.
+The 4.0.2 plugin code does not add a project-operated analytics or crash-reporting service. The user-installed runtime and chosen translation providers may perform their own service requests as described above.
 
 Console errors and user-created diagnostic material can still contain note excerpts, local paths, plugin names, service responses, or account context. Redact those items before opening a public issue. Never submit passwords, cookies, authorization headers, API keys, tokens, or private notes.
 

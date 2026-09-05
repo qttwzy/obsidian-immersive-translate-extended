@@ -13,6 +13,7 @@ const LOCAL_MODULES = [
   ["dashboard-pkce-host", path.join(PLUGIN_DIR, "dashboard-pkce-host.js")],
   ["provider-auth-navigation", path.join(PLUGIN_DIR, "provider-auth-navigation.js")],
   ["translation-view-bridge", path.join(PLUGIN_DIR, "translation-view-bridge.js")],
+  ["host-window-runtime", path.join(PLUGIN_DIR, "host-window-runtime.js")],
   ["document-workspace", path.join(PLUGIN_DIR, "document-workspace.js")],
   ["document-runtime", path.join(PLUGIN_DIR, "document-runtime.js")],
   ["userscript-compat", path.join(PLUGIN_DIR, "userscript-compat.js")],

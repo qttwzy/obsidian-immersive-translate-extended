@@ -7,7 +7,7 @@ Immersive Translate, extended into your vault.
 
 ## 中文
 
-在 Obsidian 桌面版中使用沉浸式翻译悬浮球、划词翻译、Markdown 双语翻译、账户 Dashboard 和 PDF 翻译工作区。插件设置会显示本机翻译运行时版本和官方当前版本，并提供从官方地址安装或更新的操作。
+在 Obsidian 桌面版中使用沉浸式翻译悬浮球、划词翻译、Markdown 双语翻译、账户 Dashboard、PDF 翻译工作区，以及设置与第三方插件等宿主窗口的界面翻译。插件设置会显示本机翻译运行时版本和官方当前版本，并提供从官方地址安装或更新的操作。
 
 本项目是社区维护的非官方 Obsidian 插件，与 Obsidian、Immersive Translate 及各翻译服务提供方没有官方合作或背书关系。相关名称和商标归各自权利人所有。
 
@@ -18,6 +18,7 @@ Immersive Translate, extended into your vault.
 | Markdown 阅读视图 | 从悬浮球启动整页双语或仅译文翻译 |
 | 划词与悬停 | 使用本机运行时翻译选中或悬停文本 |
 | 翻译范围 | 分别控制 Obsidian 界面区域与阅读视图正文；编辑器保持原文 |
+| 宿主弹窗 | 设置、第三方插件市场和主题市场等独立窗口与主窗口使用同一目标语言、翻译服务和双语/仅译文状态 |
 | 配置迁移 | 导入、导出经过字段和大小限制的配置；凭据类字段会被过滤 |
 | 插件冲突 | 检测重叠的翻译能力，由用户决定是否暂停 |
 | 账户与 Dashboard | 查看账户状态，打开独立 Dashboard 登录、管理账户并同步高级设置 |
@@ -51,6 +52,7 @@ ZIP 中包含 `main.js`、`dashboard-preload.js`、`document-preload.js`、`docu
 4. 在插件设置中调整界面与正文翻译范围。
 5. 在“账户与高级设置”中查看账户状态，或打开 Dashboard 登录并同步高级设置。
 6. 打开 Vault 中的 PDF，使用标题栏语言图标进入官方 PDF 工作区；也可从命令面板打开文档翻译工作区。
+7. 打开独立设置窗口或第三方插件/主题市场时，界面翻译会跟随主窗口的双语或仅译文状态。
 
 从编辑或实时预览模式发起整页翻译时，插件会临时进入阅读视图；结束翻译后恢复原模式，Markdown 源文不会被译文覆盖。
 
@@ -73,7 +75,7 @@ Issue 可用于报告问题和提出需求。Pull request 可作为具体补丁�
 
 ## English
 
-Use the Immersive Translate floating ball, selection translation, Markdown bilingual translation, account Dashboard, and PDF translation workspace in Obsidian Desktop. Plugin settings show the locally installed translation runtime and the current official version, with user-initiated install and update actions.
+Use the Immersive Translate floating ball, selection translation, Markdown bilingual translation, account Dashboard, PDF translation workspace, and host-window interface translation in Obsidian Desktop. Plugin settings show the locally installed translation runtime and the current official version, with user-initiated install and update actions.
 
 This is an unofficial, community-maintained Obsidian plugin. It is not affiliated with or endorsed by Obsidian, Immersive Translate, or any translation provider. Their names and trademarks belong to their respective owners.
 
@@ -85,7 +87,7 @@ This is an unofficial, community-maintained Obsidian plugin. It is not affiliate
 
 ### Install
 
-Download `immersive-translate-extended-<version>.zip` from [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install the translation runtime from plugin settings when needed.
+Download `immersive-translate-extended-<version>.zip` from [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install the translation runtime from plugin settings when needed. With UI translation enabled and the main window in bilingual or translation-only mode, detached Settings and community plugin or theme windows follow that same translation state.
 
 The ZIP contains `main.js`, `dashboard-preload.js`, `document-preload.js`, `document-runtime.js`, `manifest.json`, `styles.css`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. The translation runtime is installed locally from the official source through plugin settings.
 
