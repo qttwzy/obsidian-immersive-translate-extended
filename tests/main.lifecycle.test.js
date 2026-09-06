@@ -4,9 +4,21 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const { test, before, afterEach } = require("node:test");
-const Module = require("node:module");
 const path = require("node:path");
 const { createDashboardPreloadRuntime } = require("./helpers/dashboard-preload-runtime");
+const { createHostBrowserWindow } = require("./helpers/host-browser-window");
+const { actual1328HostBridgeFixture } = require("./helpers/userscript-host-bridge");
+const {
+  setupRuntime,
+  restoreRuntime,
+  loadPluginClass,
+  makePlugin,
+  harness,
+  makeElement,
+  makeRequestUrlResponse,
+  findElement,
+  collectText,
+} = require("./helpers/plugin-runtime");
 const {
   DOCUMENT_RUNTIME_ACTION_CHANNEL,
   DOCUMENT_RUNTIME_INIT_CHANNEL,
@@ -15,220 +27,12 @@ const {
   DOCUMENT_RUNTIME_WORLD_ID,
 } = require("../plugin/document-runtime");
 
-const MAIN_PATH = path.join(__dirname, "..", "plugin", "main.js");
-const trackedGlobals = [
-  "window", "self", "document", "localStorage", "sessionStorage",
-  "StorageEvent", "CustomEvent", "Event", "navigator", "XMLHttpRequest", "fetch",
-  "open", "location", "dispatchEvent", "addEventListener", "require",
-  "GM", "GM_fetch", "GM_info", "GM_getValue", "GM_setValue",
-  "GM_deleteValue", "GM_listValues", "GM_addStyle", "GM_openInTab",
-  "GM_addValueChangeListener", "GM_removeValueChangeListener", "GM_registerMenuCommand", "GM_addElement", "GM_xmlhttpRequest", "GM_xmlHttpRequest",
-  "immersiveTranslateBrowserAPI", "immersiveTranslateConfig", "IMMERSIVE_TRANSLATE_CONFIG",
-  "_getAuthCookies", "_imtGMPolyfillInstalled",
-  "_imtBrowserAPIPolyfillInstalled", "__imt_extend_engine_state__",
-  "__imt_extend_settings_save_chain__", "__imt_extend_standalone_coordinator__", "__imt_extend_init_guard__",
-  "__imt_test_script_ran__",
-];
-const originalGlobals = new Map();
-let requestUrlImpl;
-let noticeMessages = [];
-let openedModals = [];
-let addedSettingTabs = [];
+const noticeMessages = harness.noticeMessages;
+const openedModals = harness.openedModals;
+const addedSettingTabs = harness.addedSettingTabs;
 
-class MemoryStorage {
-  constructor() { this.values = new Map(); }
-  get length() { return this.values.size; }
-  key(index) { return Array.from(this.values.keys())[index] || null; }
-  getItem(key) { return this.values.has(String(key)) ? this.values.get(String(key)) : null; }
-  setItem(key, value) { this.values.set(String(key), String(value)); }
-  removeItem(key) { this.values.delete(String(key)); }
-  clear() { this.values.clear(); }
-}
-
-function makeElement(tagName) {
-  const element = {
-    tagName: String(tagName).toUpperCase(),
-    children: [],
-    parentNode: null,
-    id: "",
-    textContent: "",
-    value: "",
-    listeners: {},
-    style: {},
-    className: "",
-    classList: { toggle() {}, add() {}, remove() {} },
-    append(child) { child.parentNode = this; this.children.push(child); },
-    appendChild(child) { this.append(child); },
-    remove() {
-      if (this.parentNode) this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
-      this.parentNode = null;
-    },
-    addEventListener(name, callback) { this.listeners[name] = callback; },
-    dispatchEvent(event) { if (event && this.listeners[event.type]) this.listeners[event.type].call(this, event); },
-    createEl(childTag, options) {
-      const child = makeElement(childTag);
-      if (options && options.text) child.textContent = options.text;
-      if (options && options.value !== undefined) child.value = options.value;
-      if (options && options.type !== undefined) child.type = options.type;
-      if (options && options.placeholder !== undefined) child.placeholder = options.placeholder;
-      if (options && options.cls !== undefined) child.className = options.cls;
-      this.append(child);
-      return child;
-    },
-    createDiv(options) { return this.createEl("div", options); },
-    empty() { this.children = []; },
-    select() {},
-  };
-  return element;
-}
-
-function setupRuntime() {
-  noticeMessages = [];
-  openedModals = [];
-  addedSettingTabs = [];
-  for (const key of trackedGlobals) {
-    if (!originalGlobals.has(key)) originalGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key) || null);
-    try { delete globalThis[key]; } catch {}
-  }
-
-  const body = makeElement("body");
-  const head = makeElement("head");
-  const document = {
-    body,
-    head,
-    createElement: makeElement,
-    getElementById(id) {
-      const visit = (node) => {
-        if (node.id === id) return node;
-        for (const child of node.children || []) { const match = visit(child); if (match) return match; }
-        return null;
-      };
-      return visit(body) || visit(head);
-    },
-    querySelectorAll() { return []; },
-  };
-  const originalWindowOpen = function originalWindowOpen() { return "opened"; };
-  const originalFetch = function originalFetch() { return Promise.resolve({}); };
-  function XMLHttpRequest() {}
-  XMLHttpRequest.prototype.open = function originalXHROpen() {};
-  XMLHttpRequest.prototype.send = function originalXHRSend() {};
-
-  globalThis.window = globalThis;
-  globalThis.self = globalThis;
-  globalThis.document = document;
-  globalThis.localStorage = new MemoryStorage();
-  globalThis.sessionStorage = new MemoryStorage();
-  globalThis.StorageEvent = function StorageEvent(type, init) { this.type = type; Object.assign(this, init || {}); };
-  globalThis.CustomEvent = function CustomEvent(type, init) { this.type = type; Object.assign(this, init || {}); };
-  globalThis.Event = function Event(type) { this.type = type; };
-  globalThis.navigator = { language: "en-US", languages: ["en-US"] };
-  globalThis.XMLHttpRequest = XMLHttpRequest;
-  globalThis.fetch = originalFetch;
-  globalThis.window.open = originalWindowOpen;
-  globalThis.window.location = { href: "app://obsidian" };
-  globalThis.window.dispatchEvent = function dispatchEvent() {};
-  globalThis.window.addEventListener = function addEventListener() {};
-  globalThis.window.require = function requireModule(name) {
-    if (name === "path") return require("node:path");
-    if (name === "fs") return require("node:fs");
-    throw new Error("unexpected module: " + name);
-  };
-  requestUrlImpl = async function () { return { status: 503, text: "", headers: {}, arrayBuffer: new ArrayBuffer(0) }; };
-  return { body, head, originalWindowOpen, originalFetch, originalXHROpen: XMLHttpRequest.prototype.open, originalXHRSend: XMLHttpRequest.prototype.send };
-}
-
-function restoreRuntime() {
-  for (const key of trackedGlobals) {
-    try { delete globalThis[key]; } catch {}
-    const descriptor = originalGlobals.get(key);
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-  }
-}
-
-function loadPluginClass() {
-  function Plugin(app, manifest) { this.app = app; this.manifest = manifest; }
-  Plugin.prototype.loadData = async function () { return null; };
-  Plugin.prototype.saveData = async function () {};
-  Plugin.prototype.addSettingTab = function (tab) { addedSettingTabs.push(tab); };
-  function Modal(app) {
-    this.app = app;
-    this.contentEl = makeElement("div");
-    this.titleEl = makeElement("div");
-    this.closed = false;
-  }
-  Modal.prototype.open = function () {
-    openedModals.push(this);
-    if (typeof this.onOpen === "function") this.onOpen();
-    return this;
-  };
-  Modal.prototype.close = function () {
-    this.closed = true;
-    if (typeof this.onClose === "function") this.onClose();
-  };
-  function PluginSettingTab(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = makeElement("div"); }
-  function MarkdownView() {}
-  function Setting(container) { this.settingEl = container.createDiv({ cls: "setting-item" }); }
-  Setting.prototype.setName = function (name) { this.settingEl.createDiv({ cls: "setting-item-name", text: name }); return this; };
-  Setting.prototype.setDesc = function (desc) { this.settingEl.createDiv({ cls: "setting-item-description", text: desc }); return this; };
-  Setting.prototype.addDropdown = function (callback) {
-    const select = this.settingEl.createEl("select");
-    if (callback) callback({
-      addOption(value, label) { select.createEl("option", { value, text: label }); return this; },
-      setValue(value) { select.value = value; return this; },
-      onChange(handler) { select.addEventListener("change", () => handler(select.value)); return this; },
-    });
-    return this;
-  };
-  Setting.prototype.addButton = function (callback) {
-    const button = this.settingEl.createEl("button");
-    if (callback) callback({
-      setButtonText(text) { button.textContent = text; return this; },
-      setDisabled(value) { button.disabled = !!value; return this; },
-      onClick(handler) { button.addEventListener("click", handler); return this; },
-    });
-    return this;
-  };
-  Setting.prototype.addToggle = function (callback) {
-    const toggle = this.settingEl.createEl("input", { type: "checkbox" });
-    if (callback) callback({
-      setValue(value) { toggle.checked = !!value; return this; },
-      onChange(handler) { toggle.addEventListener("change", () => handler(!!toggle.checked)); return this; },
-    });
-    return this;
-  };
-  const obsidianMock = {
-    Plugin, Modal, PluginSettingTab, Setting, MarkdownView,
-    Notice: function Notice(message) { this.message = message; noticeMessages.push(message); },
-    requestUrl: function (options) { return requestUrlImpl(options); },
-  };
-  const originalLoad = Module._load;
-  Module._load = function (request, parent, isMain) {
-    if (request === "obsidian") return obsidianMock;
-    return originalLoad.call(this, request, parent, isMain);
-  };
-  try {
-    delete require.cache[require.resolve(MAIN_PATH)];
-    return require(MAIN_PATH);
-  } finally {
-    Module._load = originalLoad;
-  }
-}
-
-let PluginClass;
-before(() => { PluginClass = loadPluginClass(); });
+before(() => { loadPluginClass(); });
 afterEach(() => { restoreRuntime(); });
-
-function makePlugin() {
-  const app = {
-    plugins: { plugins: {} },
-    vault: { adapter: {} },
-  };
-  const plugin = new PluginClass(app, { id: "immersive-translate-extended" });
-  plugin._isUnloaded = false;
-  plugin._getDocumentPreloadPath = () => "/plugin/document-preload.js";
-  plugin._initializeDocumentRuntime = () => ({ ok: true, code: "runtime_ready" });
-  return plugin;
-}
 
 function createInstalledRuntimeDirectory(t, content) {
   const pluginDir = fs.mkdtempSync(path.join(os.tmpdir(), "imt-main-installed-runtime-"));
@@ -237,22 +41,24 @@ function createInstalledRuntimeDirectory(t, content) {
   return pluginDir;
 }
 
-function actual1328HostBridgeFixture() {
-  return '// @version 1.32.8\n' +
-    'async function hostHandler(i){let a;const calls=[],r={},we=async(...args)=>{calls.push(["we",...args]);return{ok:true}},unt=async(...args)=>{calls.push(["translate",...args])},Xu=(...args)=>{calls.push(["response",...args])};if(i.type==="noop"){}else if(i.type==="translatePage")await unt(r,i.data);else if(i.type==="getAsyncTranslationServiceList"){}else if(i.type==="switchTranslationMode"){calls.push(["switch"])}else we("content",i.type);a!==void 0&&i.id&&Xu(i.type,a,i.id);return{a,calls}}';
+function attachDashboardWindow(plugin, workspace) {
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
+  plugin._getPreloadPath = () => "/tmp/dashboard-preload.js";
+  plugin._startSyncPolling = () => {};
+  plugin._injectDashboardBridge = () => {};
 }
 
-function findElement(root, predicate) {
-  if (predicate(root)) return root;
-  for (const child of root.children || []) {
-    const match = findElement(child, predicate);
-    if (match) return match;
-  }
-  return null;
+function tick() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
-function collectText(root) {
-  return [root.textContent || "", ...(root.children || []).map(collectText)].join(" ");
+function examplePdfCandidate() {
+  return {
+    ok: true,
+    absolutePath: "/vault/papers/example.pdf",
+    fileName: "example.pdf",
+    extension: "pdf",
+  };
 }
 
 test("settings expose account, Dashboard, and safe recovery controls at one level", async () => {
@@ -454,7 +260,7 @@ test("runtime setup is started only by the settings action", async (t) => {
   plugin._activateIMT = async function () { return true; };
   plugin._startTranslationViewBridge = function () {};
   let requests = 0;
-  requestUrlImpl = async function (options) {
+  harness.requestUrlImpl = async function (options) {
     requests++;
     assert.equal(options.url, "https://download.immersivetranslate.com/immersive-translate.user.js");
     return {
@@ -486,7 +292,7 @@ test("runtime installation resolves the standard Obsidian plugin directory when 
   plugin.app.vault.adapter = { basePath: vaultRoot };
   plugin._activateIMT = async function () { return true; };
   plugin._startTranslationViewBridge = function () {};
-  requestUrlImpl = async function () {
+  harness.requestUrlImpl = async function () {
     return {
       status: 200,
       text: "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n",
@@ -556,7 +362,7 @@ test("settings automatically show the installed and official current runtime ver
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
   let requests = 0;
-  requestUrlImpl = async function (options) {
+  harness.requestUrlImpl = async function (options) {
     requests++;
     assert.equal(options.url, "https://download.immersivetranslate.com/immersive-translate.user.js");
     return {
@@ -629,7 +435,7 @@ test("settings preserve an in-progress safe-config draft while refreshing runtim
   plugin._activateIMT = async function () { return false; };
 
   let resolveVersionRequest;
-  requestUrlImpl = () => new Promise((resolve) => { resolveVersionRequest = resolve; });
+  harness.requestUrlImpl = () => new Promise((resolve) => { resolveVersionRequest = resolve; });
 
   await plugin.onload();
   const settingTab = addedSettingTabs[0];
@@ -686,7 +492,7 @@ test("settings cache a failed official version check and leave runtime storage u
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
   let requests = 0;
-  requestUrlImpl = async function () {
+  harness.requestUrlImpl = async function () {
     requests++;
     return { status: 503, text: "", headers: {} };
   };
@@ -717,7 +523,7 @@ test("settings do not label a stale version as current after an official refresh
   plugin._detectAndHandleConflicts = function () {};
   plugin._activateIMT = async function () { return false; };
   let requests = 0;
-  requestUrlImpl = async function () {
+  harness.requestUrlImpl = async function () {
     requests++;
     if (requests === 1) {
       return {
@@ -762,7 +568,7 @@ test("settings version check and install reuse a fresh official runtime response
   plugin._startTranslationViewBridge = function () {};
   const versions = ["9.7.3", "9.8.0"];
   let requests = 0;
-  requestUrlImpl = async function (options) {
+  harness.requestUrlImpl = async function (options) {
     assert.equal(options.url, "https://download.immersivetranslate.com/immersive-translate.user.js");
     const version = versions[requests++];
     return {
@@ -802,7 +608,7 @@ test("a stale plugin instance cannot overwrite a replacement runtime", async (t)
   oldPlugin._activateIMT = async function () { return true; };
   oldPlugin._startTranslationViewBridge = function () {};
   let resolveOldRequest;
-  requestUrlImpl = function () {
+  harness.requestUrlImpl = function () {
     return new Promise((resolve) => { resolveOldRequest = resolve; });
   };
 
@@ -813,7 +619,7 @@ test("a stale plugin instance cannot overwrite a replacement runtime", async (t)
   replacement._getPluginDir = () => pluginDir;
   replacement._activateIMT = async function () { return true; };
   replacement._startTranslationViewBridge = function () {};
-  requestUrlImpl = async function () {
+  harness.requestUrlImpl = async function () {
     return {
       status: 200,
       text: "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\nwindow.__imtRuntime = 'replacement';\n",
@@ -1138,29 +944,12 @@ test("production defaults expose the PDF translation action", () => {
 test("document BrowserWindow is hardened and isolated from Dashboard lifecycle", () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const loadedUrls = [];
   const externalUrls = [];
-  let browserOptions;
-  let currentUrl = "";
-  function FakeBrowserWindow(options) {
-    browserOptions = options;
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler: (handler) => { eventHandlers.windowOpen = handler; },
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; loadedUrls.push(url); };
-    this.focus = () => {};
-    this.show = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
+  const workspace = createHostBrowserWindow({ loadedUrls });
   const dashboardSentinel = { id: "dashboard" };
   plugin._dashboardWindow = dashboardSentinel;
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._openExternalUrl = (url) => { externalUrls.push(url); };
 
   assert.equal(plugin._openDocumentWorkspace({
@@ -1169,38 +958,38 @@ test("document BrowserWindow is hardened and isolated from Dashboard lifecycle",
     file: null,
     spec: { autoHandoff: false },
   }), true);
-  assert.equal(browserOptions.webPreferences.nodeIntegration, false);
-  assert.equal(browserOptions.webPreferences.contextIsolation, true);
-  assert.equal(browserOptions.webPreferences.sandbox, false);
-  assert.equal(browserOptions.webPreferences.preload, "/plugin/document-preload.js");
+  const documentWindow = workspace.windows[0];
+  const handlers = documentWindow.handlers;
+  assert.equal(documentWindow.options.webPreferences.nodeIntegration, false);
+  assert.equal(documentWindow.options.webPreferences.contextIsolation, true);
+  assert.equal(documentWindow.options.webPreferences.sandbox, false);
+  assert.equal(documentWindow.options.webPreferences.preload, "/plugin/document-preload.js");
   assert.equal(plugin._dashboardWindow, dashboardSentinel);
   assert.deepEqual(loadedUrls, ["https://app.immersivetranslate.com/file/"]);
 
-  assert.deepEqual(eventHandlers.windowOpen({ url: "https://evil.example/phish" }), { action: "deny" });
+  assert.deepEqual(handlers.windowOpen({ url: "https://evil.example/phish" }), { action: "deny" });
   assert.deepEqual(externalUrls, ["https://evil.example/phish"]);
   const navigationEvent = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-navigate"](navigationEvent, "https://evil.example/redirect");
+  handlers["will-navigate"](navigationEvent, "https://evil.example/redirect");
   assert.equal(navigationEvent.prevented, true);
   const trustedNavigation = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-redirect"](trustedNavigation, "https://app.immersivetranslate.com/pdf/");
+  handlers["will-redirect"](trustedNavigation, "https://app.immersivetranslate.com/pdf/");
   assert.equal(trustedNavigation.prevented, false);
   const trustedBabelNavigation = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-redirect"](trustedBabelNavigation, "https://app.immersivetranslate.com/babel-doc/job-123");
+  handlers["will-redirect"](trustedBabelNavigation, "https://app.immersivetranslate.com/babel-doc/job-123");
   assert.equal(trustedBabelNavigation.prevented, false);
 
   plugin._closeDocumentWorkspace();
-  assert.equal(plugin._documentSession.window(), null);
+  assert.equal(plugin._documentSession.isCurrent(documentWindow), false);
   assert.equal(plugin._dashboardWindow, dashboardSentinel);
 });
 
 test("document runtime network requests use the Obsidian host bridge", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const hostRequests = [];
   const responses = [];
-  let currentUrl = "";
-  requestUrlImpl = async function (request) {
+  harness.requestUrlImpl = async function (request) {
     hostRequests.push(request);
     const bytes = Buffer.from("translated", "utf8");
     return {
@@ -1210,20 +999,8 @@ test("document runtime network requests use the Obsidian host bridge", async () 
       arrayBuffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
     };
   };
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      send: (channel, message) => { responses.push({ channel, message }); },
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow({ responses });
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   assert.equal(plugin._openDocumentWorkspace({
     url: "https://app.immersivetranslate.com/pdf/",
     title: "PDF 翻译",
@@ -1231,7 +1008,7 @@ test("document runtime network requests use the Obsidian host bridge", async () 
     spec: { kind: "pdf", autoHandoff: false },
   }), true);
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_REQUEST_CHANNEL, {
+  workspace.windows[0].handlers["ipc-message"]({}, DOCUMENT_RUNTIME_REQUEST_CHANNEL, {
     id: "document-request-0123456789abcdef-7",
     request: {
       url: "https://api2.immersivetranslate.com/v1/translate",
@@ -1241,7 +1018,7 @@ test("document runtime network requests use the Obsidian host bridge", async () 
       timeout: 30000,
     },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
 
   assert.equal(hostRequests.length, 1);
   assert.equal(hostRequests[0].url, "https://api2.immersivetranslate.com/v1/translate");
@@ -1279,8 +1056,13 @@ test("the PDF runtime is initialized through the preload isolated world", async 
       },
     },
   };
-  plugin._documentSession.begin({ kind: "pdf" });
-  plugin._documentSession.attach(documentWindow);
+  const opened = plugin._documentSession.open({
+    url: "https://app.immersivetranslate.com/pdf/",
+    spec: { kind: "pdf" },
+    preloadPath: "/plugin/document-preload.js",
+    createWindow() { return documentWindow; },
+  });
+  assert.equal(opened.ok, true);
 
   assert.deepEqual(await plugin._initializeDocumentRuntime(documentWindow), { ok: true, code: "loaded", version: "1.32.7" });
   assert.equal(sent.length, 1);
@@ -1298,35 +1080,17 @@ test("the PDF runtime is initialized through the preload isolated world", async 
 test("a validated local PDF is handed off once after the official workspace finishes loading", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   let handoffCalls = 0;
-  let currentUrl = "";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._resolveDocumentHandoffFile = () => ({
-    ok: true,
-    absolutePath: "/vault/papers/example.pdf",
-    fileName: "example.pdf",
-    extension: "pdf",
-  });
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
+  plugin._resolveDocumentHandoffFile = () => examplePdfCandidate();
   plugin._handoffDocumentFile = async () => { handoffCalls++; return { ok: true, code: "handed_off" }; };
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
 
   assert.equal(plugin._openDocumentTranslationWorkspace(file), true);
-  eventHandlers["did-finish-load"]();
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
 
   assert.equal(handoffCalls, 1);
   assert.deepEqual(plugin._documentSession.pdfDownloadSource(), {
@@ -1341,30 +1105,11 @@ test("a validated local PDF is handed off once after the official workspace fini
 test("one approved PDF export reports Blob capture completion and cancellation through the document bridge", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const responses = [];
   const captures = [];
-  let currentUrl = "";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      send: (channel, message) => { responses.push({ channel, message }); },
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._resolveDocumentHandoffFile = () => ({
-    ok: true,
-    absolutePath: "/vault/papers/example.pdf",
-    fileName: "example.pdf",
-    extension: "pdf",
-  });
+  const workspace = createHostBrowserWindow({ responses });
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
+  plugin._resolveDocumentHandoffFile = () => examplePdfCandidate();
   plugin._handoffDocumentFile = async () => ({ ok: true, code: "handed_off" });
   plugin._armDocumentPdfDownload = async (_window, source) => {
     let resolveCompletion;
@@ -1395,34 +1140,35 @@ test("one approved PDF export reports Blob capture completion and cancellation t
   };
 
   plugin._openDocumentTranslationWorkspace({ path: "papers/example.pdf", name: "example.pdf", extension: "pdf" });
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  const handlers = workspace.windows[0].handlers;
+  handlers["did-finish-load"]();
+  await tick();
+  await tick();
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-0",
     action: "prepare_translated_pdf_download",
     context: { fileName: "another.pdf", title: "example.pdf" },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.equal(responses.at(-1).message.payload.code, "source_unavailable");
   assert.equal(plugin._documentSession.pendingDownload(), null);
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-00",
     action: "prepare_translated_pdf_download",
     context: { fileName: "", title: "dataexample.pdf" },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.equal(responses.at(-1).message.payload.code, "source_unavailable");
   assert.equal(plugin._documentSession.pendingDownload(), null);
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-1",
     action: "prepare_translated_pdf_download",
     context: { fileName: "example.pdf", title: "example.pdf" },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.equal(responses.at(-1).channel, DOCUMENT_RUNTIME_ACTION_CHANNEL + ":response");
   assert.equal(responses.at(-1).message.payload.ok, true);
   assert.equal(captures.length, 1);
@@ -1434,30 +1180,30 @@ test("one approved PDF export reports Blob capture completion and cancellation t
     maxBytes: 1024 * 1024,
   });
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-2",
     action: "finish_translated_pdf_download",
     context: { token: captures[0].token, ok: true, byteLength: 4096 },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.deepEqual(captures[0].finished, { ok: true, byteLength: 4096, code: "capture_failed" });
   assert.equal(responses.filter((entry) => entry.channel === DOCUMENT_RUNTIME_STATUS_CHANNEL).at(-1).message.state, "completed");
   assert.match(noticeMessages.at(-1), /example-译文\.pdf/);
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-3",
     action: "prepare_translated_pdf_download",
     context: { fileName: "example.pdf", title: "example.pdf" },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.equal(captures.length, 2);
 
-  eventHandlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
+  handlers["ipc-message"]({}, DOCUMENT_RUNTIME_ACTION_CHANNEL, {
     id: "document-action-0123456789abcdef-4",
     action: "cancel_translated_pdf_download",
     context: { token: captures[1].token },
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
   assert.equal(captures[1].cancelled, 1);
   assert.equal(responses.at(-1).message.payload.code, "download_cancelled");
 
@@ -1467,37 +1213,19 @@ test("one approved PDF export reports Blob capture completion and cancellation t
 test("the PDF runtime initializes before the local file handoff starts", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const order = [];
-  let currentUrl = "";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._initializeDocumentRuntime = async () => { order.push("runtime"); return { ok: true, code: "runtime_ready" }; };
   plugin._scheduleDocumentRuntimeRefresh = () => { order.push("refresh"); return true; };
-  plugin._resolveDocumentHandoffFile = () => ({
-    ok: true,
-    absolutePath: "/vault/papers/example.pdf",
-    fileName: "example.pdf",
-    extension: "pdf",
-  });
+  plugin._resolveDocumentHandoffFile = () => examplePdfCandidate();
   plugin._handoffDocumentFile = async () => { order.push("handoff"); return { ok: true, code: "handed_off" }; };
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
 
   assert.equal(plugin._openDocumentTranslationWorkspace(file), true);
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
 
   assert.deepEqual(order, ["runtime", "handoff", "refresh"]);
   plugin._closeDocumentWorkspace();
@@ -1506,49 +1234,33 @@ test("the PDF runtime initializes before the local file handoff starts", async (
 test("a main-frame PDF route change schedules one runtime recovery without repeating the file handoff", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const refreshes = [];
-  let currentUrl = "";
   let handoffCalls = 0;
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._initializeDocumentRuntime = async () => ({ ok: true, code: "runtime_ready" });
   plugin._scheduleDocumentRuntimeRefresh = (window, generation, delay) => {
     refreshes.push({ window, generation, delay });
     return true;
   };
-  plugin._resolveDocumentHandoffFile = () => ({
-    ok: true,
-    absolutePath: "/vault/papers/example.pdf",
-    fileName: "example.pdf",
-    extension: "pdf",
-  });
+  plugin._resolveDocumentHandoffFile = () => examplePdfCandidate();
   plugin._handoffDocumentFile = async () => { handoffCalls++; return { ok: true, code: "handed_off" }; };
 
   assert.equal(plugin._openDocumentTranslationWorkspace({ path: "papers/example.pdf", name: "example.pdf", extension: "pdf" }), true);
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  const documentWindow = workspace.windows[0];
+  documentWindow.handlers["did-finish-load"]();
+  await tick();
+  await tick();
   refreshes.length = 0;
 
-  eventHandlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/pdf/#page=1", false);
+  documentWindow.handlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/pdf/#page=1", false);
   assert.equal(refreshes.length, 0);
 
-  eventHandlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/pdf/#page=1", true);
+  documentWindow.handlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/pdf/#page=1", true);
   assert.equal(refreshes.length, 1);
-  assert.equal(refreshes[0].window, plugin._documentSession.window());
+  assert.equal(refreshes[0].window, documentWindow);
   assert.equal(refreshes[0].generation, plugin._documentSession.generation());
+  assert.equal(plugin._documentSession.isCurrent(documentWindow, refreshes[0].generation), true);
   assert.equal(refreshes[0].delay, 100);
   assert.equal(handoffCalls, 1);
 
@@ -1558,71 +1270,71 @@ test("a main-frame PDF route change schedules one runtime recovery without repea
 test("a reused document window schedules SPA recovery for the current generation", () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const refreshes = [];
-  let currentUrl = "";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.focus = () => {};
-    this.show = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._scheduleDocumentRuntimeRefresh = (window, generation, delay) => {
     refreshes.push({ window, generation, delay });
     return true;
   };
 
   assert.equal(plugin._openDocumentWorkspace({ url: "https://app.immersivetranslate.com/pdf/", spec: { autoHandoff: false } }), true);
+  const documentWindow = workspace.windows[0];
   const createdGeneration = plugin._documentSession.generation();
   assert.equal(plugin._openDocumentWorkspace({ url: "https://app.immersivetranslate.com/file/", spec: { autoHandoff: false } }), true);
   assert.ok(plugin._documentSession.generation() > createdGeneration);
 
-  eventHandlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/file/#upload", true);
+  documentWindow.handlers["did-navigate-in-page"]({}, "https://app.immersivetranslate.com/file/#upload", true);
   assert.equal(refreshes.length, 1);
-  assert.equal(refreshes[0].window, plugin._documentSession.window());
+  assert.equal(refreshes[0].window, documentWindow);
   assert.equal(refreshes[0].generation, plugin._documentSession.generation());
+  assert.equal(plugin._documentSession.isCurrent(documentWindow, refreshes[0].generation), true);
   assert.equal(refreshes[0].delay, 100);
 
   plugin._closeDocumentWorkspace();
 });
 
+test("document runtime refresh initializes only a trusted current workspace URL", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const inits = [];
+  plugin._initializeDocumentRuntime = (documentWindow) => {
+    inits.push(documentWindow.webContents.getURL());
+    return { ok: true, code: "runtime_ready" };
+  };
+  const documentWindow = {
+    isDestroyed: () => false,
+    webContents: { getURL: () => "https://example.com/" },
+  };
+  const opened = plugin._documentSession.open({
+    url: "https://app.immersivetranslate.com/pdf/",
+    title: "PDF 翻译",
+    spec: { autoHandoff: false },
+    preloadPath: "/plugin/document-preload.js",
+    createWindow: () => documentWindow,
+  });
+  assert.equal(opened.ok, true);
+
+  plugin._scheduleDocumentRuntimeRefresh(documentWindow, opened.generation, 0);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(inits, []);
+
+  documentWindow.webContents.getURL = () => "https://app.immersivetranslate.com/pdf/";
+  plugin._scheduleDocumentRuntimeRefresh(documentWindow, opened.generation, 0);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(inits, ["https://app.immersivetranslate.com/pdf/"]);
+});
+
 test("a transient official sample navigation retries the PDF handoff before falling back", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
-  let currentUrl = "";
   let scheduledRetry = null;
   let handoffCalls = 0;
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._scheduleTimeout = (callback) => { scheduledRetry = callback; };
   plugin._initializeDocumentRuntime = async () => ({ ok: true, code: "runtime_ready" });
-  plugin._resolveDocumentHandoffFile = () => ({
-    ok: true,
-    absolutePath: "/vault/papers/example.pdf",
-    fileName: "example.pdf",
-    extension: "pdf",
-  });
+  plugin._resolveDocumentHandoffFile = () => examplePdfCandidate();
   plugin._handoffDocumentFile = async () => {
     handoffCalls++;
     return handoffCalls < 4
@@ -1632,9 +1344,9 @@ test("a transient official sample navigation retries the PDF handoff before fall
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
 
   assert.equal(plugin._openDocumentTranslationWorkspace(file), true);
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.equal(handoffCalls, 1);
   assert.equal(typeof scheduledRetry, "function");
   assert.doesNotMatch(noticeMessages.join(" "), /手动选择.*example\.pdf/);
@@ -1643,8 +1355,8 @@ test("a transient official sample navigation retries the PDF handoff before fall
     const retry = scheduledRetry;
     scheduledRetry = null;
     retry();
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    await tick();
+    await tick();
     assert.equal(handoffCalls, expectedCalls);
     if (expectedCalls < 4) assert.equal(typeof scheduledRetry, "function");
   }
@@ -1655,22 +1367,20 @@ test("a transient official sample navigation retries the PDF handoff before fall
 test("a rejected reused-window load clears the pending PDF handoff and reports the failure", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const existingWindow = {
-    isDestroyed: () => false,
-    isMinimized: () => false,
-    show() {},
-    focus() {},
-    loadURL: () => Promise.reject(new Error("navigation failed")),
-  };
-  plugin._documentSession.attach(existingWindow);
-  plugin._getBrowserWindow = () => function BrowserWindow() { throw new Error("must reuse"); };
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
+  assert.equal(plugin._openDocumentWorkspace({
+    url: "https://app.immersivetranslate.com/pdf/",
+    spec: { autoHandoff: false },
+  }), true);
+  workspace.windows[0].loadURL = () => Promise.reject(new Error("navigation failed"));
   const file = { path: "papers/example.pdf", name: "example.pdf", extension: "pdf" };
 
   assert.equal(plugin._openDocumentTranslationWorkspace(file), true);
-  assert.ok(plugin._documentSession.pendingHandoff());
-  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(plugin._documentSession.handoffOverlayState(true).pending, true);
+  await tick();
 
-  assert.equal(plugin._documentSession.pendingHandoff(), null);
+  assert.equal(plugin._documentSession.handoffOverlayState(true).pending, false);
   assert.match(noticeMessages.at(-1), /文档翻译页面加载失败/);
   assert.doesNotMatch(noticeMessages.join(" "), /已打开.*example\.pdf/);
 });
@@ -1678,23 +1388,8 @@ test("a rejected reused-window load clears the pending PDF handoff and reports t
 test("reusing the document window serializes PDF handoffs across navigation", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
-  let currentUrl = "";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-    };
-    this.loadURL = (url) => { currentUrl = url; };
-    this.focus = () => {};
-    this.show = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._resolveDocumentHandoffFile = (file) => ({
     ok: true,
     absolutePath: "/vault/" + file.name,
@@ -1712,20 +1407,20 @@ test("reusing the document window serializes PDF handoffs across navigation", as
   const second = { path: "second.pdf", name: "second.pdf", extension: "pdf" };
 
   plugin._openDocumentTranslationWorkspace(first);
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf"]);
 
   plugin._openDocumentTranslationWorkspace(second);
-  eventHandlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf"]);
 
   finishFirst({ ok: false, code: "cdp_command_failed" });
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf", "second.pdf"]);
   assert.match(noticeMessages.at(-1), /second\.pdf/);
   plugin._closeDocumentWorkspace();
@@ -1734,27 +1429,8 @@ test("reusing the document window serializes PDF handoffs across navigation", as
 test("closing the document window lets the next PDF claim its own handoff", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const windows = [];
-  function FakeBrowserWindow() {
-    const handlers = {};
-    this.destroyed = false;
-    this.currentUrl = "";
-    this.webContents = {
-      getURL: () => this.currentUrl,
-      setWindowOpenHandler() {},
-      on: (name, handler) => { handlers[name] = handler; },
-      send() {},
-    };
-    this.handlers = handlers;
-    this.loadURL = (url) => { this.currentUrl = url; };
-    this.focus = () => {};
-    this.show = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (handlers.closed) handlers.closed(); };
-    this.on = (name, handler) => { handlers[name] = handler; };
-    windows.push(this);
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
+  const workspace = createHostBrowserWindow();
+  plugin._getBrowserWindow = () => workspace.FakeBrowserWindow;
   plugin._resolveDocumentHandoffFile = (file) => ({
     ok: true,
     absolutePath: "/vault/" + file.name,
@@ -1773,30 +1449,30 @@ test("closing the document window lets the next PDF claim its own handoff", asyn
   const third = { path: "third.pdf", name: "third.pdf", extension: "pdf" };
 
   plugin._openDocumentTranslationWorkspace(first);
-  windows[0].handlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf"]);
 
   plugin._openDocumentTranslationWorkspace(second);
-  windows[0].handlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[0].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf"]);
 
   plugin._closeDocumentWorkspace();
   plugin._openDocumentTranslationWorkspace(third);
-  assert.equal(windows.length, 2);
-  assert.equal(plugin._documentSession.pendingHandoff().file.name, "third.pdf");
+  assert.equal(workspace.windows.length, 2);
+  assert.equal(plugin._documentSession.handoffOverlayState(true).expectedFileName, "third.pdf");
 
   finishFirst({ ok: true, code: "handed_off" });
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf"]);
 
-  windows[1].handlers["did-finish-load"]();
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+  workspace.windows[1].handlers["did-finish-load"]();
+  await tick();
+  await tick();
   assert.deepEqual(calls, ["first.pdf", "third.pdf"]);
   assert.match(noticeMessages.at(-1), /third\.pdf/);
   plugin._closeDocumentWorkspace();
@@ -1902,7 +1578,7 @@ test("userscript activation reads the locally installed runtime without a networ
   const runtimeSource = "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n";
   const pluginDir = createInstalledRuntimeDirectory(t, runtimeSource);
   let requestCount = 0;
-  requestUrlImpl = async () => { requestCount++; return { status: 500 }; };
+  harness.requestUrlImpl = async () => { requestCount++; return { status: 500 }; };
   plugin._getPluginDir = () => pluginDir;
   plugin._activationGeneration = 1;
 
@@ -2066,7 +1742,7 @@ test("userscript activation reports the version parsed from the script it actual
   assert.equal(window.GM_info.script.version, "1.32.7");
   assert.equal(window.GM.info.script.version, "1.32.7");
   assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest().version, "1.32.7");
-  assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest()._imtBridgeVersion, "4.0.2");
+  assert.equal(window.immersiveTranslateBrowserAPI.runtime.getManifest()._imtBridgeVersion, require("../package.json").version);
   assert.equal(window.__imt_extend_engine_state__.userscriptVersion, "1.32.7");
 });
 
@@ -3264,38 +2940,17 @@ test("Dashboard window denies untrusted navigations and opens them externally", 
   const plugin = makePlugin();
   const externalUrls = [];
   const dashboardUrls = [];
-  const eventHandlers = {};
-  let browserOptions;
-  let permissionRequestHandler;
-  let permissionCheckHandler;
-  function FakeBrowserWindow(options) {
-    browserOptions = options;
-    this.options = options;
-    this.destroyed = false;
-    this.webContents = {
-      setWindowOpenHandler: (handler) => { eventHandlers.windowOpen = handler; },
-      on: (name, handler) => { eventHandlers[name] = handler; },
-      session: {
-        cookies: { get: async () => [] },
-        setPermissionRequestHandler(handler) { permissionRequestHandler = handler; },
-        setPermissionCheckHandler(handler) { permissionCheckHandler = handler; },
-      },
-    };
-    this.loadURL = (url) => { dashboardUrls.push(url); };
-    this.focus = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._getPreloadPath = () => "/tmp/dashboard-preload.js";
+  const workspace = createHostBrowserWindow({ loadedUrls: dashboardUrls });
+  attachDashboardWindow(plugin, workspace);
   plugin._getElectronShell = () => ({ openExternal: (url) => { externalUrls.push(url); return Promise.resolve(); } });
-  plugin._startSyncPolling = () => {};
-  plugin._injectDashboardBridge = () => {};
   let authSyncs = 0;
   plugin._syncDashboardAuthState = () => { authSyncs++; return Promise.resolve(true); };
   plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general");
 
+  const dashboardWindow = workspace.windows[0];
+  const handlers = dashboardWindow.handlers;
+  const session = dashboardWindow.webContents.session;
+  const browserOptions = dashboardWindow.options;
   assert.equal(dashboardUrls[0], "https://dash.immersivetranslate.com/#general");
   assert.equal(browserOptions.webPreferences.nodeIntegration, false);
   assert.equal(browserOptions.webPreferences.contextIsolation, true);
@@ -3303,26 +2958,26 @@ test("Dashboard window denies untrusted navigations and opens them externally", 
   assert.equal(browserOptions.webPreferences.webSecurity, true);
   assert.match(browserOptions.webPreferences.partition, /^persist:/);
   let permissionGranted = true;
-  permissionRequestHandler(null, "media", (allowed) => { permissionGranted = allowed; });
+  session.permissionRequestHandler(null, "media", (allowed) => { permissionGranted = allowed; });
   assert.equal(permissionGranted, false);
-  assert.equal(permissionCheckHandler(), false);
+  assert.equal(session.permissionCheckHandler(), false);
   const webviewEvent = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-attach-webview"](webviewEvent);
+  handlers["will-attach-webview"](webviewEvent);
   assert.equal(webviewEvent.prevented, true);
-  eventHandlers["did-finish-load"]();
+  handlers["did-finish-load"]();
   assert.equal(authSyncs, 1);
-  const popupResult = eventHandlers.windowOpen({ url: "https://evil.example/phish" });
+  const popupResult = handlers.windowOpen({ url: "https://evil.example/phish" });
   assert.deepEqual(popupResult, { action: "deny" });
   assert.deepEqual(externalUrls, ["https://evil.example/phish"]);
   const navigationEvent = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-navigate"](navigationEvent, "https://evil.example/redirect");
+  handlers["will-navigate"](navigationEvent, "https://evil.example/redirect");
   assert.equal(navigationEvent.prevented, true);
   assert.deepEqual(externalUrls, ["https://evil.example/phish", "https://evil.example/redirect"]);
-  eventHandlers.windowOpen({ url: "https://app.immersivetranslate.com/#general" });
+  handlers.windowOpen({ url: "https://app.immersivetranslate.com/#general" });
   assert.equal(dashboardUrls[1], "https://app.immersivetranslate.com/#general");
-  eventHandlers.windowOpen({ url: "https://constructor/phish" });
+  handlers.windowOpen({ url: "https://constructor/phish" });
   assert.deepEqual(externalUrls, ["https://evil.example/phish", "https://evil.example/redirect", "https://constructor/phish"]);
-  const staleWindowOpen = eventHandlers.windowOpen;
+  const staleWindowOpen = handlers.windowOpen;
   plugin._closeDashboardWindow();
   const replacementLoads = [];
   plugin._dashboardWindow = { isDestroyed: () => false, loadURL: (nextUrl) => { replacementLoads.push(nextUrl); } };
@@ -3335,37 +2990,20 @@ test("provider OAuth navigation opens one actionable account handoff instead of 
   const plugin = makePlugin();
   const externalUrls = [];
   const dashboardUrls = [];
-  const eventHandlers = {};
-  let currentUrl = "https://immersivetranslate.com/accounts/login?from=plugin";
-  function FakeBrowserWindow(options) {
-    this.options = options;
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler: (handler) => { eventHandlers.windowOpen = handler; },
-      on: (name, handler) => { eventHandlers[name] = handler; },
-      session: { cookies: { get: async () => [] } },
-    };
-    this.loadURL = (url) => { currentUrl = url; dashboardUrls.push(url); };
-    this.focus = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._getPreloadPath = () => "/tmp/dashboard-preload.js";
+  const currentUrl = "https://immersivetranslate.com/accounts/login?from=plugin";
+  const workspace = createHostBrowserWindow({ loadedUrls: dashboardUrls, currentUrl });
+  attachDashboardWindow(plugin, workspace);
   plugin._getElectronShell = () => ({ openExternal: (url) => { externalUrls.push(url); return Promise.resolve(); } });
-  plugin._startSyncPolling = () => {};
-  plugin._injectDashboardBridge = () => {};
   plugin._openDashboardWindow(currentUrl);
+  const handlers = workspace.windows[0].handlers;
 
-  const googleResult = eventHandlers.windowOpen({
+  const googleResult = handlers.windowOpen({
     url: "https://accounts.google.com/o/oauth2/auth?client_id=one",
     // Electron may reduce the referrer to the origin, so the live window URL
     // must remain the authoritative account-flow source.
     referrer: { url: "https://immersivetranslate.com/" },
   });
-  const wechatResult = eventHandlers.windowOpen({
+  const wechatResult = handlers.windowOpen({
     url: "https://open.weixin.qq.com/connect/qrconnect?appid=one",
     referrer: { url: currentUrl },
   });
@@ -3394,32 +3032,15 @@ test("same-window provider redirects are denied and routed to the account handof
   const plugin = makePlugin();
   const externalUrls = [];
   const guides = [];
-  const eventHandlers = {};
   const currentUrl = "https://immersivetranslate.com/accounts/login?from=plugin";
-  function FakeBrowserWindow() {
-    this.destroyed = false;
-    this.webContents = {
-      getURL: () => currentUrl,
-      setWindowOpenHandler: (handler) => { eventHandlers.windowOpen = handler; },
-      on: (name, handler) => { eventHandlers[name] = handler; },
-      session: { cookies: { get: async () => [] } },
-    };
-    this.loadURL = () => {};
-    this.focus = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._getPreloadPath = () => "/tmp/dashboard-preload.js";
+  const workspace = createHostBrowserWindow({ currentUrl });
+  attachDashboardWindow(plugin, workspace);
   plugin._getElectronShell = () => ({ openExternal: (url) => { externalUrls.push(url); return Promise.resolve(); } });
   plugin._showProviderLoginGuide = (guide) => { guides.push(guide); };
-  plugin._startSyncPolling = () => {};
-  plugin._injectDashboardBridge = () => {};
   plugin._openDashboardWindow(currentUrl);
 
   const navigationEvent = { prevented: false, preventDefault() { this.prevented = true; } };
-  eventHandlers["will-navigate"](navigationEvent, "https://open.weixin.qq.com/connect/qrconnect?appid=one");
+  workspace.windows[0].handlers["will-navigate"](navigationEvent, "https://open.weixin.qq.com/connect/qrconnect?appid=one");
 
   assert.equal(navigationEvent.prevented, true);
   assert.deepEqual(externalUrls, []);
@@ -3455,53 +3076,36 @@ test("reused Dashboard windows are restored and shown before navigation", () => 
 test("Dashboard PKCE IPC keeps the verifier in the host across the exchange", async () => {
   setupRuntime();
   const plugin = makePlugin();
-  const eventHandlers = {};
   const sent = [];
   const requests = [];
   const loadedUrls = [];
-  let browserOptions;
-  requestUrlImpl = async (options) => {
+  harness.requestUrlImpl = async (options) => {
     requests.push(options);
     if (options.url.endsWith("/pkce/exchange-token")) {
       return { status: 200, json: { code: 0, data: { token: "ipc-token" } }, text: "" };
     }
     return { status: 200, json: { code: 0, data: { userId: 21, email: "ipc@example.com", token: "must-not-copy" } }, text: "" };
   };
-  function FakeBrowserWindow(options) {
-    browserOptions = options;
-    this.destroyed = false;
-    this.webContents = {
-      mainFrame: {},
-      setWindowOpenHandler() {},
-      on: (name, handler) => { eventHandlers[name] = handler; },
-      send: (channel, message) => { sent.push({ channel, message }); },
-      session: { cookies: { get: async () => [] } },
-    };
-    this.loadURL = (url) => { loadedUrls.push(url); };
-    this.focus = () => {};
-    this.isDestroyed = () => this.destroyed;
-    this.close = () => { this.destroyed = true; if (eventHandlers.closed) eventHandlers.closed(); };
-    this.on = (name, handler) => { eventHandlers[name] = handler; };
-  }
-  plugin._getBrowserWindow = () => FakeBrowserWindow;
-  plugin._getPreloadPath = () => "/tmp/dashboard-preload.js";
-  plugin._startSyncPolling = () => {};
+  const workspace = createHostBrowserWindow({ loadedUrls, sent });
+  attachDashboardWindow(plugin, workspace);
   plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general");
 
-  const argument = browserOptions.webPreferences.additionalArguments[0];
+  const dashboardWindow = workspace.windows[0];
+  const handlers = dashboardWindow.handlers;
+  const argument = dashboardWindow.options.webPreferences.additionalArguments[0];
   const channel = argument.slice("--imt-pkce-channel=".length);
-  eventHandlers["ipc-message"]({ sender: {}, senderFrame: plugin._dashboardWindow.webContents.mainFrame }, channel, { id: "forged-sender", type: "getOrCreatePkceChallengeAsync", data: {} });
-  eventHandlers["ipc-message"]({ sender: plugin._dashboardWindow.webContents, senderFrame: {} }, channel, { id: "forged-frame", type: "getOrCreatePkceChallengeAsync", data: {} });
+  handlers["ipc-message"]({ sender: {}, senderFrame: plugin._dashboardWindow.webContents.mainFrame }, channel, { id: "forged-sender", type: "getOrCreatePkceChallengeAsync", data: {} });
+  handlers["ipc-message"]({ sender: plugin._dashboardWindow.webContents, senderFrame: {} }, channel, { id: "forged-frame", type: "getOrCreatePkceChallengeAsync", data: {} });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sent.length, 0);
 
-  eventHandlers["ipc-message"]({ sender: plugin._dashboardWindow.webContents, senderFrame: plugin._dashboardWindow.webContents.mainFrame }, channel, { id: "ipc-challenge", type: "getOrCreatePkceChallengeAsync", data: {} });
+  handlers["ipc-message"]({ sender: plugin._dashboardWindow.webContents, senderFrame: plugin._dashboardWindow.webContents.mainFrame }, channel, { id: "ipc-challenge", type: "getOrCreatePkceChallengeAsync", data: {} });
   await new Promise((resolve) => setImmediate(resolve));
   const challenge = sent[0].message.payload;
   assert.equal(challenge.ok, true);
   assert.equal(challenge.verifier, undefined);
 
-  eventHandlers["ipc-message"]({}, channel, {
+  handlers["ipc-message"]({}, channel, {
     id: "ipc-exchange",
     type: "submitPkceAuthCodeAsync",
     data: { requestId: challenge.requestId, authCode: "ipc-auth-code" },
@@ -3517,7 +3121,7 @@ test("Dashboard PKCE IPC keeps the verifier in the host across the exchange", as
   assert.match(exchangeBody.verifier, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(sessionStorage.getItem("__imt_pkce_session"), null);
 
-  eventHandlers["ipc-message"]({}, channel, {
+  handlers["ipc-message"]({}, channel, {
     id: "ipc-navigate",
     type: "navigateTrustedDashboard",
     data: { url: "https://dash.immersivetranslate.com/#general" },
@@ -3525,7 +3129,7 @@ test("Dashboard PKCE IPC keeps the verifier in the host across the exchange", as
   assert.equal(sent[2].message.payload.ok, true);
   assert.equal(loadedUrls.at(-1), "https://dash.immersivetranslate.com/#general");
 
-  eventHandlers["ipc-message"]({}, channel, {
+  handlers["ipc-message"]({}, channel, {
     id: "ipc-navigation-denied",
     type: "navigateTrustedDashboard",
     data: { url: "https://immersivetranslate.com/accounts/login" },
@@ -3678,11 +3282,11 @@ test("Dashboard cookie changes clear stale auth state on logout", async () => {
   localStorage.setItem("imt-gm-authToken", JSON.stringify("token"));
   plugin._syncCookiesToMain();
   await Promise.resolve();
-  assert.equal(plugin._authCookies, "session=one");
+  assert.equal(plugin._getAuthCookies(), "session=one");
   cookies = [];
   plugin._syncCookiesToMain();
   await Promise.resolve();
-  assert.equal(plugin._authCookies, "");
+  assert.equal(plugin._getAuthCookies(), "");
   assert.equal(plugin._lastCookieHeader, "");
   assert.equal(localStorage.getItem("imt-gm-userInfo"), null);
   assert.equal(localStorage.getItem("imt-gm-authToken"), null);
@@ -3697,20 +3301,20 @@ test("stale user-info responses cannot clear newer dashboard auth", async () => 
     isDestroyed: () => false,
     webContents: { session: { cookies: { get: async () => cookies } } },
   };
-  requestUrlImpl = () => new Promise((resolve) => pendingResponses.push(resolve));
+  harness.requestUrlImpl = () => new Promise((resolve) => pendingResponses.push(resolve));
 
   plugin._syncCookiesToMain();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(plugin._authCookies, "session=one");
+  assert.equal(plugin._getAuthCookies(), "session=one");
   cookies = [{ name: "session", value: "two" }];
   plugin._syncCookiesToMain();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(plugin._authCookies, "session=two");
+  assert.equal(plugin._getAuthCookies(), "session=two");
   assert.equal(pendingResponses.length, 2);
 
   pendingResponses[0]({ status: 401, text: "", headers: {} });
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(plugin._authCookies, "session=two");
+  assert.equal(plugin._getAuthCookies(), "session=two");
   assert.equal(plugin._lastCookieHeader, "session=two");
 
   pendingResponses[1]({ status: 200, text: JSON.stringify({ email: "new@example.com", userType: "pro", avatar: { token: "nested-secret" }, token: "must-not-be-stored" }), headers: {} });
@@ -3727,17 +3331,17 @@ test("auth cleanup invalidates pending cookie reads and API responses", async ()
     isDestroyed: () => false,
     webContents: { session: { cookies: { get: () => new Promise((resolve) => { resolveCookies = resolve; }) } } },
   };
-  requestUrlImpl = () => new Promise((resolve) => { resolveUserInfo = resolve; });
-  plugin._authCookies = "session=old";
+  harness.requestUrlImpl = () => new Promise((resolve) => { resolveUserInfo = resolve; });
+  plugin._authAdapter.applyLegacyCookies("session=old");
   plugin._authGeneration = 1;
   plugin._syncCookiesToMain();
   plugin._clearDashboardAuthState();
   resolveCookies([{ name: "session", value: "old" }]);
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(plugin._authCookies, "");
+  assert.equal(plugin._getAuthCookies(), "");
 
   plugin._isUnloaded = false;
-  plugin._authCookies = "session=current";
+  plugin._authAdapter.applyLegacyCookies("session=current");
   plugin._authGeneration++;
   plugin._fetchUserInfoViaAPI();
   await new Promise((resolve) => setImmediate(resolve));
@@ -3841,8 +3445,8 @@ test("normalizes GM request headers and limits cookie forwarding to trusted host
   setupRuntime();
   const plugin = makePlugin();
   const calls = [];
-  plugin._authCookies = "session=secret";
-  requestUrlImpl = async (options) => {
+  plugin._authAdapter.applyLegacyCookies("session=secret");
+  harness.requestUrlImpl = async (options) => {
     calls.push(options);
     return { status: 200, text: "ok", headers: { "content-type": "text/plain" }, arrayBuffer: new TextEncoder().encode("ok").buffer };
   };
@@ -3879,10 +3483,10 @@ test("mirrors PKCE Dashboard auth state and attaches its token to trusted reques
   assert.equal(await plugin._syncDashboardAuthState(), true);
   assert.equal(plugin._getAuthToken(), "pkce-token");
   assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-userInfo")), { email: "pkce@example.com" });
-  plugin._authCookies = "session=legacy";
+  plugin._authAdapter.applyLegacyCookies("session=legacy");
 
   let captured;
-  requestUrlImpl = async (options) => {
+  harness.requestUrlImpl = async (options) => {
     captured = options;
     return { status: 200, text: "ok", headers: {}, arrayBuffer: new ArrayBuffer(0) };
   };
@@ -3901,8 +3505,9 @@ test("mirrors PKCE Dashboard auth state and attaches its token to trusted reques
   authState = { version: 1, authenticated: false };
   assert.equal(await plugin._syncDashboardAuthState(), true);
   assert.equal(plugin._getAuthToken(), "");
+  assert.equal(plugin._getAuthCookies(), "session=legacy");
   assert.equal(localStorage.getItem("imt-gm-authToken"), null);
-  assert.equal(localStorage.getItem("imt-gm-userInfo"), null);
+  assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-userInfo")), { email: "pkce@example.com" });
 });
 
 test("restores a persisted PKCE token before the Dashboard is reopened", async () => {
@@ -3924,13 +3529,17 @@ test("supports blob responses, logical timeout, and abort callbacks", async () =
   setupRuntime();
   const plugin = makePlugin();
   plugin._installGMPolyfill();
-  requestUrlImpl = async () => ({ status: 200, text: "abc", headers: { "Content-Type": "image/png" }, arrayBuffer: new TextEncoder().encode("abc").buffer });
+  harness.requestUrlImpl = async () => makeRequestUrlResponse({
+    status: 200,
+    body: "abc",
+    headers: { "Content-Type": "image/png" },
+  });
 
   const blobResponse = await gmRequest({ method: "GET", url: "https://assets.example/image", responseType: "blob" });
   assert.equal(blobResponse.response.type, "image/png");
   assert.equal(blobResponse.response.size, 3);
 
-  requestUrlImpl = () => new Promise(() => {});
+  harness.requestUrlImpl = () => new Promise(() => {});
   await new Promise((resolve, reject) => {
     window.GM_xmlhttpRequest({
       method: "GET",
@@ -3954,14 +3563,49 @@ test("supports blob responses, logical timeout, and abort callbacks", async () =
   });
 });
 
+test("GM_xmlhttpRequest reads requestUrl json only for json responses", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin._installGMPolyfill();
+
+  const cases = [
+    { body: "plain text", headers: { "Content-Type": "text/plain" }, responseType: "text", status: 200 },
+    { body: "abc", headers: { "Content-Type": "image/png" }, responseType: "blob", status: 200 },
+    { body: "abc", headers: { "Content-Type": "application/octet-stream" }, responseType: "arraybuffer", status: 200 },
+    { body: "", headers: {}, responseType: "text", status: 204 },
+    { body: "{\"ok\":true}", headers: { "Content-Type": "application/json" }, responseType: "json", status: 200 },
+  ];
+
+  for (const item of cases) {
+    const response = makeRequestUrlResponse({
+      status: item.status,
+      body: item.body,
+      headers: item.headers,
+    });
+    harness.requestUrlImpl = async () => response;
+    const payload = await gmRequest({ url: "https://example.com/resource", responseType: item.responseType });
+    assert.equal(payload.status, item.status);
+    assert.equal(response.stats.jsonReads, item.responseType === "json" ? 1 : 0);
+    if (item.status === 204) assert.equal(payload.response, undefined);
+    else if (item.responseType === "text") assert.equal(payload.response, item.body);
+    else if (item.responseType === "blob") assert.equal(payload.response.size, 3);
+    else if (item.responseType === "arraybuffer") assert.ok(payload.response instanceof ArrayBuffer);
+    else assert.deepEqual(payload.response, { ok: true });
+  }
+});
+
 test("GM_fetch accepts Request objects without replacing native fetch or XHR", async () => {
   const runtime = setupRuntime();
   const plugin = makePlugin();
   let captured;
-  plugin._authCookies = "session=secret";
-  requestUrlImpl = async (options) => {
+  plugin._authAdapter.applyLegacyCookies("session=secret");
+  harness.requestUrlImpl = async (options) => {
     captured = options;
-    return { status: 201, text: "created", headers: { "Content-Type": "text/plain", "X-Result": "yes" }, arrayBuffer: new TextEncoder().encode("created").buffer };
+    return makeRequestUrlResponse({
+      status: 201,
+      body: "created",
+      headers: { "Content-Type": "text/plain", "X-Result": "yes" },
+    });
   };
   plugin._installGMPolyfill();
   plugin._installGMFetchPolyfill();
@@ -4443,7 +4087,7 @@ test("replacement instances supersede an older standalone restore", async () => 
     },
     vault: { adapter: {} },
   };
-  const olderPlugin = new PluginClass(app, { id: "immersive-translate-extended" });
+  const olderPlugin = makePlugin(app);
   const ReplacementPluginClass = loadPluginClass();
   const replacementPlugin = new ReplacementPluginClass(app, { id: "immersive-translate-extended" });
   olderPlugin._isUnloaded = false; replacementPlugin._isUnloaded = false;

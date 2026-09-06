@@ -1,18 +1,10 @@
 "use strict";
 
+const presentWindow = require("./owned-window").presentWindow;
+
 function windowDestroyed(documentWindow) {
   if (!documentWindow) return true;
   try { return documentWindow.isDestroyed(); } catch (error) { return true; }
-}
-
-function presentWindow(documentWindow) {
-  try {
-    if (typeof documentWindow.isMinimized === "function" && documentWindow.isMinimized() && typeof documentWindow.restore === "function") {
-      documentWindow.restore();
-    }
-  } catch (error) {}
-  try { if (typeof documentWindow.show === "function") documentWindow.show(); } catch (error) {}
-  try { if (typeof documentWindow.focus === "function") documentWindow.focus(); } catch (error) {}
 }
 
 function createDocumentWindowOptions(title, preloadPath) {
@@ -41,6 +33,7 @@ const RETRYABLE_HANDOFF_CODES = {
 
 function createDocumentSession(options) {
   const clearTimeoutFn = options && options.clearTimeout ? options.clearTimeout : clearTimeout;
+  const setTimeoutFn = options && options.setTimeout ? options.setTimeout : setTimeout;
   let windowRef = null;
   let generation = 0;
   let spec = null;
@@ -156,6 +149,21 @@ function createDocumentSession(options) {
     return true;
   }
 
+  function scheduleRefresh(documentWindow, expectedGeneration, delayMs, onRefresh) {
+    if (typeof onRefresh !== "function") return false;
+    clearRefresh();
+    const delay = Number.isFinite(delayMs) ? Math.max(0, Math.min(5000, delayMs)) : 750;
+    const timer = setTimeoutFn(function () {
+      if (runtimeRefreshTimer !== timer) return;
+      runtimeRefreshTimer = null;
+      if (!isCurrent(documentWindow, expectedGeneration)) return;
+      onRefresh();
+    }, delay);
+    runtimeRefreshTimer = timer;
+    if (timer && typeof timer.unref === "function") timer.unref();
+    return true;
+  }
+
   function isCurrent(documentWindow, expectedGeneration) {
     if (!documentWindow || windowRef !== documentWindow || windowDestroyed(documentWindow)) return false;
     if (Number.isFinite(expectedGeneration) && expectedGeneration !== generation) return false;
@@ -225,20 +233,15 @@ function createDocumentSession(options) {
   }
 
   return {
-    window() { return windowRef; },
     generation() { return generation; },
     spec() { return spec || {}; },
-    pendingHandoff,
     pdfDownloadSource() { return pdfDownloadSource; },
     pendingDownload() { return pendingPdfDownload; },
     isCurrent,
-    begin,
-    attach,
     open,
     clearHandoff,
     handoffOverlayState,
     setHandoffOverlay,
-    waitForHandoff,
     adoptHandoff,
     claimHandoffWhenIdle,
     scheduleHandoffRetry,
@@ -248,13 +251,11 @@ function createDocumentSession(options) {
       return true;
     },
     setPdfDownloadSource(source) { pdfDownloadSource = source; },
-    setRefreshTimer(timer) { runtimeRefreshTimer = timer; },
-    isRefreshTimer(timer) { return runtimeRefreshTimer === timer; },
+    scheduleRefresh,
     clearRefresh,
     cancelPendingDownload,
     setPendingDownload(pending) { pendingPdfDownload = pending; },
     isPendingDownload(pending) { return pendingPdfDownload === pending; },
-    abandonOpen,
     handleClosed(documentWindow) {
       if (windowRef !== documentWindow) return false;
       generation += 1;

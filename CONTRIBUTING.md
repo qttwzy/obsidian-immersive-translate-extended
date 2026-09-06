@@ -22,4 +22,4 @@ Keep each pull request focused on one observable outcome. Update tests and user-
 
 The maintainer integrates accepted changes in the canonical development repository and publishes the result through a later public snapshot. This keeps Issues and patch review convenient while preserving one development history.
 
-Repository code is available under the [MIT License](LICENSE). Runtime integration changes must keep the official source, user-initiated installation, privacy disclosure, and attribution notices current.
+Project-owned code is available under the [GNU GPL version 3](LICENSE) (`GPL-3.0-only`). Submit contributions under the same license and retain applicable third-party notices. Runtime integration changes must keep the official source, user-initiated installation, privacy disclosure, and attribution notices current.

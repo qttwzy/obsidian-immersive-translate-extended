@@ -1,6 +1,10 @@
 # Third-party notices
 
-This repository's MIT license applies to the project-owned source code. Components listed below retain their own copyright and license terms.
+Copyright (c) 2026 IMT-Enhanced contributors.
+
+Starting with version 4.0.3, project-owned code is licensed under the GNU General Public License version 3 only (`GPL-3.0-only`); see [LICENSE](LICENSE). Earlier copies published under MIT retain that license. Components listed below retain their own copyright and license terms.
+
+Complete corresponding source, including the build scripts, is available from the matching `v<version>` tag at [the public repository](https://github.com/qttwzy/obsidian-immersive-translate-extended/tags). Each Release provides a direct link to that source archive.
 
 ## Immersive Translate userscript runtime
 

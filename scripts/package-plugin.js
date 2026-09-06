@@ -14,6 +14,8 @@ const PACKAGE_FILES = [
   ["plugin/document-runtime.js", "document-runtime.js"],
   ["plugin/gm-element.js", "gm-element.js"],
   ["plugin/gm-headers.js", "gm-headers.js"],
+  ["plugin/gm-request-body.js", "gm-request-body.js"],
+  ["plugin/gm-response-value.js", "gm-response-value.js"],
   ["plugin/main.js", "main.js"],
   ["plugin/manifest.json", "manifest.json"],
   ["plugin/styles.css", "styles.css"],

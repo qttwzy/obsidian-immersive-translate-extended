@@ -1,6 +1,6 @@
 {
   "name": "obsidian-immersive-translate-extended",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "private": true,
   "description": "Immersive Translate Extended Obsidian plugin",
   "main": "plugin/main.js",
@@ -17,7 +17,7 @@
   },
   "keywords": [],
   "author": "IMT-Extended",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "type": "commonjs",
   "devDependencies": {
     "playwright": "^1.59.1"

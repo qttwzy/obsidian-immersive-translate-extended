@@ -5,18 +5,9 @@ const path = require("node:path");
 const { webcrypto } = require("node:crypto");
 const vm = require("node:vm");
 const { createDashboardPkceHost } = require("../../plugin/dashboard-pkce-host");
+const { MemoryStorage } = require("./memory-storage");
 
 const PRELOAD_SOURCE = fs.readFileSync(path.join(__dirname, "..", "..", "plugin", "dashboard-preload.js"), "utf8");
-
-class MemoryStorage {
-  constructor() { this.values = new Map(); }
-  get length() { return this.values.size; }
-  key(index) { return Array.from(this.values.keys())[index] || null; }
-  getItem(key) { return this.values.has(String(key)) ? this.values.get(String(key)) : null; }
-  setItem(key, value) { this.values.set(String(key), String(value)); }
-  removeItem(key) { this.values.delete(String(key)); }
-  clear() { this.values.clear(); }
-}
 
 function makeElement() {
   const element = {

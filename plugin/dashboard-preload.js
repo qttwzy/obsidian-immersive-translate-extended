@@ -176,22 +176,89 @@ module.exports = { createGmElementApi };
 
 return module.exports;
 })().createGmElementApi;
-  var ALLOWED_HOSTS = {
-    "dash.immersivetranslate.com": true,
-    "app.immersivetranslate.com": true,
-    "immersivetranslate.com": true,
-    "onboarding.immersivetranslate.com": true,
-    "immersive-translate.owenyoung.com": true,
-  };
+  var dashboardOrigins = (function () {
+var module = { exports: {} };
+var exports = module.exports;
+const DASHBOARD_ORIGIN_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+  "immersivetranslate.com": true,
+  "onboarding.immersivetranslate.com": true,
+  "immersive-translate.owenyoung.com": true,
+};
+
+const DASHBOARD_APP_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+};
+
+function isDashboardOriginHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_ORIGIN_HOSTS, String(hostname || "").toLowerCase());
+}
+
+function isDashboardAppHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_APP_HOSTS, String(hostname || "").toLowerCase());
+}
+
+module.exports = {
+  DASHBOARD_ORIGIN_HOSTS: DASHBOARD_ORIGIN_HOSTS,
+  DASHBOARD_APP_HOSTS: DASHBOARD_APP_HOSTS,
+  isDashboardOriginHost: isDashboardOriginHost,
+  isDashboardAppHost: isDashboardAppHost,
+};
+
+return module.exports;
+})();
+  var isDashboardOriginHost = dashboardOrigins.isDashboardOriginHost;
+  var isDashboardAppHost = dashboardOrigins.isDashboardAppHost;
+  var sanitizeUserInfo = (function () {
+var module = { exports: {} };
+var exports = module.exports;
+const USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
+
+function copySafeUserInfoFields(source) {
+  const result = {};
+  Object.keys(USER_INFO_FIELD_LIMITS).forEach(function (key) {
+    const value = source[key];
+    const limit = USER_INFO_FIELD_LIMITS[key];
+    if ((key === "id" || key === "userId") && typeof value === "number" && isFinite(value)) result[key] = value;
+    else if (typeof value === "string" && value.length <= limit) result[key] = value;
+  });
+  return result;
+}
+
+function sanitizeUserInfo(value, allowIdOnly) {
+  if (!value || typeof value !== "object") return null;
+  const candidates = [value];
+  if (value.data && typeof value.data === "object") candidates.push(value.data);
+  if (value.result && typeof value.result === "object") candidates.push(value.result);
+  for (let i = 0; i < candidates.length; i++) {
+    const result = copySafeUserInfoFields(candidates[i]);
+    if (result.email || result.userId || result.nickname || (allowIdOnly && result.id !== undefined)) return result;
+  }
+  return null;
+}
+
+function sanitizeTrustedUserInfo(value) {
+  return sanitizeUserInfo(value, true);
+}
+
+module.exports = {
+  sanitizeUserInfo: sanitizeUserInfo,
+  sanitizeTrustedUserInfo: sanitizeTrustedUserInfo,
+};
+
+return module.exports;
+})().sanitizeUserInfo;
   try {
-    if (location.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(ALLOWED_HOSTS, location.hostname.toLowerCase())) {
+    if (location.protocol !== "https:" || !isDashboardOriginHost(location.hostname)) {
       console.warn("[IMT-Preload] Refusing to run on an untrusted origin");
       return;
     }
   } catch (e) { return; }
   var P = "imt-gm-";
   var BRIDGE_META_NAME = "immersive-translate-meta";
-  var BRIDGE_VERSION = "4.0.2";
+  var BRIDGE_VERSION = "4.0.3";
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
   var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
   // A logout can race an in-flight Dashboard request; invalidate captures when identity data is removed.
@@ -204,7 +271,6 @@ return module.exports;
   var SYNC_SCOPE_DASHBOARD = syncProtocol.SYNC_SCOPE_DASHBOARD;
   var SYNC_TOP_KEYS = { fullLocalUserConfig: true, userInfo: true, user_info: true, subscriptionInfo: true, memberConfig: true };
   var SERVICE_AVAILABILITY_FIELDS = { visible: true, enabled: true, enable: true, available: true, isAvailable: true, configured: true, isConfigured: true, hidden: true, disabled: true };
-  var USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
   var PKCE_LEGACY_SESSION_KEY = "__imt_pkce_session";
   var _coreBrowserAPI = null;
   var _storageChangeListeners = [];
@@ -321,7 +387,7 @@ return module.exports;
     try {
       var raw = localStorage.getItem("user_info");
       if (typeof raw !== "string" || !raw) return;
-      var userInfo = _sanitizeSyncUserInfo(JSON.parse(raw), true);
+      var userInfo = sanitizeUserInfo(JSON.parse(raw), true);
       if (userInfo) smv("userInfo", userInfo);
     } catch (e) {}
   }
@@ -404,7 +470,7 @@ return module.exports;
     smv("authToken", token);
     // Current Dashboard builds read user_token/user_info through browser.storage.
     smv("user_token", token);
-    var safeUser = _sanitizeSyncUserInfo(authState.userInfo, true);
+    var safeUser = sanitizeUserInfo(authState.userInfo, true);
     if (safeUser) smv("userInfo", safeUser);
     else try { localStorage.removeItem("user_info"); } catch (e) {}
     // Keep the Dashboard's own aliases working; the local-storage bridge mirrors them to the safe store.
@@ -418,7 +484,7 @@ return module.exports;
     if (typeof initialToken !== "string") initialToken = "";
     var initialDashboardToken = gmv("user_token", "");
     if (typeof initialDashboardToken !== "string") initialDashboardToken = "";
-    var initialDashboardUser = JSON.stringify(_sanitizeSyncUserInfo(gmv("user_info", null), true) || null);
+    var initialDashboardUser = JSON.stringify(sanitizeUserInfo(gmv("user_info", null), true) || null);
     _invokePkceHost("getPersistedAuthState", {}).then(function (result) {
       if (!result || !result.ok || !result.authState) return;
       var token = result.authState.token;
@@ -427,11 +493,11 @@ return module.exports;
       if (typeof currentToken !== "string") currentToken = "";
       var currentDashboardToken = gmv("user_token", "");
       if (typeof currentDashboardToken !== "string") currentDashboardToken = "";
-      var currentDashboardUser = JSON.stringify(_sanitizeSyncUserInfo(gmv("user_info", null), true) || null);
+      var currentDashboardUser = JSON.stringify(sanitizeUserInfo(gmv("user_info", null), true) || null);
       // A page-side login/logout that completed while IPC was in flight owns the newer state.
       if (_captureGeneration !== initialGeneration || currentToken !== initialToken
           || currentDashboardToken !== initialDashboardToken || currentDashboardUser !== initialDashboardUser) return;
-      var hostUser = JSON.stringify(_sanitizeSyncUserInfo(result.authState.userInfo, true) || null);
+      var hostUser = JSON.stringify(sanitizeUserInfo(result.authState.userInfo, true) || null);
       if (currentToken === token && currentDashboardToken === token && currentDashboardUser === hostUser) return;
       _storePkceLogin(result.authState);
       setTimeout(function () {
@@ -471,8 +537,7 @@ return module.exports;
           var target;
           try { target = new URL(currentUrl.searchParams.get("return_url") || fallback); }
           catch (e) { target = new URL(fallback); }
-          var targetHost = target.hostname.toLowerCase();
-          if (target.protocol !== "https:" || (targetHost !== "dash.immersivetranslate.com" && targetHost !== "app.immersivetranslate.com")) {
+          if (target.protocol !== "https:" || !isDashboardAppHost(target.hostname)) {
             target = new URL(fallback);
           }
           // Ask the host to reuse the owned BrowserWindow. Cross-origin
@@ -486,31 +551,7 @@ return module.exports;
     };
   }
 
-  function _isSensitiveSyncKey(key) { return syncProtocol.isSensitiveSyncKey(key); }
-
   function _isUnsafeSyncProperty(key) { return syncProtocol.isUnsafeSyncProperty(key); }
-
-  function _copySafeUserInfoFields(source) {
-    var result = {};
-    Object.keys(USER_INFO_FIELD_LIMITS).forEach(function (key) {
-      var value = source[key]; var limit = USER_INFO_FIELD_LIMITS[key];
-      if ((key === "id" || key === "userId") && typeof value === "number" && isFinite(value)) result[key] = value;
-      else if (typeof value === "string" && value.length <= limit) result[key] = value;
-    });
-    return result;
-  }
-
-  function _sanitizeSyncUserInfo(value, allowIdOnly) {
-    if (!value || typeof value !== "object") return null;
-    var candidates = [value];
-    if (value.data && typeof value.data === "object") candidates.push(value.data);
-    if (value.result && typeof value.result === "object") candidates.push(value.result);
-    for (var i = 0; i < candidates.length; i++) {
-      var result = _copySafeUserInfoFields(candidates[i]);
-      if (result.email || result.userId || result.nickname || (allowIdOnly && result.id !== undefined)) return result;
-    }
-    return null;
-  }
 
   function _redactSyncValue(value, depth, budget) {
     return syncProtocol.redactSyncValue(value, depth, budget);
@@ -563,7 +604,7 @@ return module.exports;
     }
     if (key === P + "userInfo") {
       if (!_hasStoredAuthToken()) return null;
-      value = _sanitizeSyncUserInfo(value, true);
+      value = sanitizeUserInfo(value, true);
       if (!value) return null;
     } else if (key === P + "subscriptionInfo") {
       if (!_hasStoredAuthToken()) return null;
@@ -938,7 +979,7 @@ return module.exports;
         try {
           var parsed = typeof value === "string" ? JSON.parse(value) : value;
           if (key === "user_info") {
-            var userInfo = _sanitizeSyncUserInfo(parsed, true);
+            var userInfo = sanitizeUserInfo(parsed, true);
             if (userInfo && _hasStoredAuthToken()) smv("userInfo", userInfo);
           }
         } catch (e) {}
@@ -971,7 +1012,7 @@ return module.exports;
           try {
             var p = JSON.parse(v);
             if (_importantKeys[j] === "user_info") {
-              var userInfo = _sanitizeSyncUserInfo(p, true);
+              var userInfo = sanitizeUserInfo(p, true);
               if (userInfo && _hasStoredAuthToken()) smv("userInfo", userInfo);
             }
             if (typeof v === "string" && v.length >= 16 && (_importantKeys[j] === "immersiveTranslateIMT_COMMON_JWT_TOKEN" || _importantKeys[j] === "immersiveTranslateGoogleAccessToken")) {
@@ -1174,7 +1215,7 @@ return module.exports;
   function _captureKind(url) {
     try {
       var parsed = new URL(url, location.href);
-      if (parsed.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(ALLOWED_HOSTS, parsed.hostname.toLowerCase())) return "";
+      if (parsed.protocol !== "https:" || !isDashboardOriginHost(parsed.hostname)) return "";
       var path = parsed.pathname.toLowerCase().replace(/\/+$/, "");
       if (/(^|\/)(?:api\/translate\/user|v\d+\/user(?:\/(?:info|profile))?|user\/(?:info|profile)|account\/(?:info|profile))$/.test(path)) return "user";
       if (/(^|\/)(?:oauth\/token|auth\/token|api\/token|token)$/.test(path)) return "auth";
@@ -1280,7 +1321,7 @@ return module.exports;
     if (!data || typeof data !== "object") return;
     if (kind === "user") {
       if (!_hasStoredAuthToken()) return;
-      var userInfo = _sanitizeSyncUserInfo(data);
+      var userInfo = sanitizeUserInfo(data);
       if (userInfo) _safeStore("userInfo", userInfo, 64 * 1024);
       return;
     }
@@ -1398,7 +1439,7 @@ return module.exports;
       version: 1,
       authenticated: normalizedToken.length > 0,
       token: normalizedToken,
-      userInfo: normalizedToken.length > 0 ? _sanitizeSyncUserInfo(gmv("userInfo", null), true) : null,
+      userInfo: normalizedToken.length > 0 ? sanitizeUserInfo(gmv("userInfo", null), true) : null,
     };
   };
 
@@ -1461,15 +1502,41 @@ return module.exports;
   }
 
   function _installDashboardHostBridge() {
-    var allowedHosts = {
-      "dash.immersivetranslate.com": true,
-      "app.immersivetranslate.com": true,
-      "immersivetranslate.com": true,
-      "onboarding.immersivetranslate.com": true,
-      "immersive-translate.owenyoung.com": true,
-    };
+    var isDashboardOriginHost = (function () {
+var module = { exports: {} };
+var exports = module.exports;
+const DASHBOARD_ORIGIN_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+  "immersivetranslate.com": true,
+  "onboarding.immersivetranslate.com": true,
+  "immersive-translate.owenyoung.com": true,
+};
+
+const DASHBOARD_APP_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+};
+
+function isDashboardOriginHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_ORIGIN_HOSTS, String(hostname || "").toLowerCase());
+}
+
+function isDashboardAppHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_APP_HOSTS, String(hostname || "").toLowerCase());
+}
+
+module.exports = {
+  DASHBOARD_ORIGIN_HOSTS: DASHBOARD_ORIGIN_HOSTS,
+  DASHBOARD_APP_HOSTS: DASHBOARD_APP_HOSTS,
+  isDashboardOriginHost: isDashboardOriginHost,
+  isDashboardAppHost: isDashboardAppHost,
+};
+
+return module.exports;
+})().isDashboardOriginHost;
     try {
-      if (location.protocol !== "https:" || !Object.prototype.hasOwnProperty.call(allowedHosts, location.hostname.toLowerCase())) return;
+      if (location.protocol !== "https:" || !isDashboardOriginHost(location.hostname)) return;
     } catch (e) { return; }
     var electron;
     try { electron = require("electron"); } catch (e) { return; }

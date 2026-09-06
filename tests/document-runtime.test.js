@@ -392,6 +392,7 @@ test("document runtime injects userscript styles through GM.addElement", async (
 
 test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch", async () => {
   const requests = [];
+  let atobCalls = 0;
   const bridge = {
     async waitForInit() { return { trusted: true }; },
     getValue(key, fallback) { return fallback; },
@@ -410,6 +411,17 @@ test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch
           headers: { "content-type": "application/json", "x-runtime": "xhr" },
           text,
           base64: Buffer.from(text, "utf8").toString("base64"),
+        };
+      }
+      if (request.url.endsWith("/bytes")) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          finalUrl: request.url,
+          headers: { "content-type": "application/octet-stream" },
+          text: "",
+          base64: Buffer.from([0, 1, 255, 42]).toString("base64"),
         };
       }
       const text = "fetch-ok";
@@ -439,6 +451,17 @@ test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch
       "    onerror: reject,",
       "  });",
       "});",
+      "globalThis.__bytesProbe = new Promise(function (resolve, reject) {",
+      "  GM_xmlhttpRequest({",
+      "    url: 'https://api2.immersivetranslate.com/bytes',",
+      "    responseType: 'arraybuffer',",
+      "    onload: function (response) {",
+      "      var bytes = new Uint8Array(response.response);",
+      "      resolve({ byteLength: bytes.byteLength, first: bytes[0], mid: bytes[2], last: bytes[3] });",
+      "    },",
+      "    onerror: reject,",
+      "  });",
+      "});",
       "globalThis.__fetchProbe = GM_fetch('https://example.com/fetch', {",
       "  method: 'POST',",
       "  body: new Uint8Array([0, 1, 255]),",
@@ -458,13 +481,18 @@ test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch
     Request,
     TextDecoder,
     TextEncoder,
+    Uint8Array,
     URL,
     URLSearchParams,
-    atob(value) { return Buffer.from(value, "base64").toString("binary"); },
+    atob(value) {
+      atobCalls += 1;
+      return Buffer.from(value, "base64").toString("binary");
+    },
     btoa(value) { return Buffer.from(value, "binary").toString("base64"); },
   });
   const result = await execution.result;
   const xhrProbe = await execution.context.__xhrProbe;
+  const bytesProbe = await execution.context.__bytesProbe;
   const fetchProbe = await execution.context.__fetchProbe;
   const requestObjectProbe = await execution.context.__requestObjectProbe;
 
@@ -475,6 +503,8 @@ test("document runtime adapts bridge requests for GM_xmlhttpRequest and GM_fetch
     response: { answer: 42 },
     responseHeaders: "content-type: application/json\r\nx-runtime: xhr",
   });
+  assert.deepEqual(JSON.parse(JSON.stringify(bytesProbe)), { byteLength: 4, first: 0, mid: 255, last: 42 });
+  assert.equal(atobCalls, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(fetchProbe)), {
     status: 200,
     ok: true,

@@ -158,6 +158,20 @@ test("authenticated Accounts close asks its host to reuse the embedded window wi
   assert.equal(nativeCloseCount, 1);
 });
 
+test("authenticated Accounts close accepts an app Dashboard return URL", () => {
+  const runtime = createRuntime({
+    host: "immersivetranslate.com",
+    closeWindow: () => {},
+    openWindow: () => null,
+  });
+  runtime.location.href = "https://immersivetranslate.com/accounts/login?return_url=https%3A%2F%2Fapp.immersivetranslate.com%2F%23general";
+  runtime.localStorage.setItem("imt-gm-authToken", JSON.stringify("authenticated-close-token"));
+
+  runtime.close();
+
+  assert.deepEqual(runtime.__getHostNavigations(), ["https://app.immersivetranslate.com/#general"]);
+});
+
 test("Dashboard sync controls recover after an SPA render removes them", async () => {
   const runtime = createRuntime({
     hostAuthState: {

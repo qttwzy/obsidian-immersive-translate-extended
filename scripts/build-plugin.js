@@ -11,6 +11,8 @@ const LOCAL_MODULES = [
   ["auth-session-adapter", path.join(PLUGIN_DIR, "auth-session-adapter.js")],
   ["pkce-auth", path.join(PLUGIN_DIR, "pkce-auth.js")],
   ["dashboard-pkce-host", path.join(PLUGIN_DIR, "dashboard-pkce-host.js")],
+  ["dashboard-origins", path.join(PLUGIN_DIR, "dashboard-origins.js")],
+  ["user-info", path.join(PLUGIN_DIR, "user-info.js")],
   ["provider-auth-navigation", path.join(PLUGIN_DIR, "provider-auth-navigation.js")],
   ["sync-protocol", path.join(PLUGIN_DIR, "sync-protocol.js")],
   ["translation-state", path.join(PLUGIN_DIR, "translation-state.js")],
@@ -18,6 +20,9 @@ const LOCAL_MODULES = [
   ["host-window-runtime", path.join(PLUGIN_DIR, "host-window-runtime.js")],
   ["gm-element", path.join(PLUGIN_DIR, "gm-element.js")],
   ["gm-headers", path.join(PLUGIN_DIR, "gm-headers.js")],
+  ["gm-request-body", path.join(PLUGIN_DIR, "gm-request-body.js")],
+  ["gm-response-value", path.join(PLUGIN_DIR, "gm-response-value.js")],
+  ["owned-window", path.join(PLUGIN_DIR, "owned-window.js")],
   ["document-session", path.join(PLUGIN_DIR, "document-session.js")],
   ["document-workspace", path.join(PLUGIN_DIR, "document-workspace.js")],
   ["document-runtime", path.join(PLUGIN_DIR, "document-runtime.js")],
@@ -30,6 +35,8 @@ const DASHBOARD_OUTPUT_PATH = path.join(PLUGIN_DIR, "dashboard-preload.js");
 const DASHBOARD_INLINE_MODULES = [
   ["sync-protocol", path.join(PLUGIN_DIR, "sync-protocol.js")],
   ["gm-element", path.join(PLUGIN_DIR, "gm-element.js")],
+  ["dashboard-origins", path.join(PLUGIN_DIR, "dashboard-origins.js")],
+  ["user-info", path.join(PLUGIN_DIR, "user-info.js")],
 ];
 
 function read(filePath) {

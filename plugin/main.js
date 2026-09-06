@@ -463,6 +463,78 @@ module.exports = {
 
 };
 
+__imtFactories["dashboard-origins"] = function (module, exports, require) {
+"use strict";
+
+const DASHBOARD_ORIGIN_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+  "immersivetranslate.com": true,
+  "onboarding.immersivetranslate.com": true,
+  "immersive-translate.owenyoung.com": true,
+};
+
+const DASHBOARD_APP_HOSTS = {
+  "dash.immersivetranslate.com": true,
+  "app.immersivetranslate.com": true,
+};
+
+function isDashboardOriginHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_ORIGIN_HOSTS, String(hostname || "").toLowerCase());
+}
+
+function isDashboardAppHost(hostname) {
+  return Object.prototype.hasOwnProperty.call(DASHBOARD_APP_HOSTS, String(hostname || "").toLowerCase());
+}
+
+module.exports = {
+  DASHBOARD_ORIGIN_HOSTS: DASHBOARD_ORIGIN_HOSTS,
+  DASHBOARD_APP_HOSTS: DASHBOARD_APP_HOSTS,
+  isDashboardOriginHost: isDashboardOriginHost,
+  isDashboardAppHost: isDashboardAppHost,
+};
+
+};
+
+__imtFactories["user-info"] = function (module, exports, require) {
+"use strict";
+
+const USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
+
+function copySafeUserInfoFields(source) {
+  const result = {};
+  Object.keys(USER_INFO_FIELD_LIMITS).forEach(function (key) {
+    const value = source[key];
+    const limit = USER_INFO_FIELD_LIMITS[key];
+    if ((key === "id" || key === "userId") && typeof value === "number" && isFinite(value)) result[key] = value;
+    else if (typeof value === "string" && value.length <= limit) result[key] = value;
+  });
+  return result;
+}
+
+function sanitizeUserInfo(value, allowIdOnly) {
+  if (!value || typeof value !== "object") return null;
+  const candidates = [value];
+  if (value.data && typeof value.data === "object") candidates.push(value.data);
+  if (value.result && typeof value.result === "object") candidates.push(value.result);
+  for (let i = 0; i < candidates.length; i++) {
+    const result = copySafeUserInfoFields(candidates[i]);
+    if (result.email || result.userId || result.nickname || (allowIdOnly && result.id !== undefined)) return result;
+  }
+  return null;
+}
+
+function sanitizeTrustedUserInfo(value) {
+  return sanitizeUserInfo(value, true);
+}
+
+module.exports = {
+  sanitizeUserInfo: sanitizeUserInfo,
+  sanitizeTrustedUserInfo: sanitizeTrustedUserInfo,
+};
+
+};
+
 __imtFactories["provider-auth-navigation"] = function (module, exports, require) {
 "use strict";
 
@@ -1245,22 +1317,155 @@ module.exports = { createGmHeaders };
 
 };
 
+__imtFactories["gm-request-body"] = function (module, exports, require) {
+"use strict";
+
+function createGmRequestBody(hasHeader) {
+  function encodeUtf8(value) {
+    return new TextEncoder().encode(String(value));
+  }
+
+  function joinByteArrays(parts) {
+    var length = parts.reduce(function (total, part) { return total + part.byteLength; }, 0);
+    var joined = new Uint8Array(length);
+    var offset = 0;
+    for (var i = 0; i < parts.length; i++) {
+      joined.set(parts[i], offset);
+      offset += parts[i].byteLength;
+    }
+    return joined.buffer;
+  }
+
+  async function serializeFormData(formData, headers) {
+    var boundary = "----IMTObsidian" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+    var parts = [];
+    for (var headerName in headers) if (headerName.toLowerCase() === "content-type") delete headers[headerName];
+    for (var entry of formData.entries()) {
+      var name = String(entry[0]).replace(/"/g, "%22");
+      var value = entry[1];
+      if (typeof value === "string") {
+        parts.push(encodeUtf8("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n"));
+      } else {
+        var filename = String(value.name || "blob").replace(/"/g, "%22");
+        var contentType = value.type || "application/octet-stream";
+        parts.push(encodeUtf8("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\nContent-Type: " + contentType + "\r\n\r\n"));
+        parts.push(new Uint8Array(await value.arrayBuffer()));
+        parts.push(encodeUtf8("\r\n"));
+      }
+    }
+    parts.push(encodeUtf8("--" + boundary + "--\r\n"));
+    headers["Content-Type"] = "multipart/form-data; boundary=" + boundary;
+    return joinByteArrays(parts);
+  }
+
+  async function classify(data, method, headers) {
+    if (data === undefined || data === null || method === "GET" || method === "HEAD") return { kind: "empty" };
+    if (typeof data === "string") return { kind: "text", value: data };
+    if (typeof URLSearchParams !== "undefined" && data instanceof URLSearchParams) {
+      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
+      return { kind: "text", value: data.toString() };
+    }
+    if (typeof FormData !== "undefined" && data instanceof FormData) return { kind: "formdata", value: data };
+    if (typeof Blob !== "undefined" && data instanceof Blob) {
+      return { kind: "bytes", value: new Uint8Array(await data.arrayBuffer()) };
+    }
+    if (data instanceof ArrayBuffer) return { kind: "bytes", value: new Uint8Array(data) };
+    if (ArrayBuffer.isView(data)) {
+      return { kind: "bytes", value: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) };
+    }
+    if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
+    return { kind: "text", value: JSON.stringify(data) };
+  }
+
+  async function serializeHostBody(data, method, headers) {
+    var part = await classify(data, method, headers);
+    if (part.kind === "empty") return undefined;
+    if (part.kind === "text") return part.value;
+    if (part.kind === "formdata") return serializeFormData(part.value, headers);
+    return part.value.buffer.slice(part.value.byteOffset, part.value.byteOffset + part.value.byteLength);
+  }
+
+  async function serializeIpcBody(data, method, headers, bytesToBase64) {
+    var part = await classify(data, method, headers);
+    if (part.kind === "empty") return null;
+    if (part.kind === "text") return { type: "text", data: part.value };
+    if (part.kind === "formdata") {
+      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
+      return { type: "text", data: JSON.stringify(data) };
+    }
+    return { type: "base64", data: bytesToBase64(part.value) };
+  }
+
+  return {
+    serializeHostBody: serializeHostBody,
+    serializeIpcBody: serializeIpcBody,
+  };
+}
+
+module.exports = { createGmRequestBody };
+
+};
+
+__imtFactories["gm-response-value"] = function (module, exports, require) {
+"use strict";
+
+function createGmResponseValue(getResponseHeader) {
+  function decode(options) {
+    var type = String(options.responseType || "text").toLowerCase();
+    var text = typeof options.text === "string" ? options.text : "";
+    var headers = options.headers || {};
+    var bytes = options.bytes;
+    if (type === "json") {
+      if (options.json !== undefined && typeof options.json === "object" && options.json !== null) return options.json;
+      return JSON.parse(text || "null");
+    }
+    if (type === "arraybuffer") return bytes;
+    if (type === "blob") {
+      var contentType = getResponseHeader(headers, "content-type") || "application/octet-stream";
+      if (typeof Blob === "function") return new Blob([bytes], { type: contentType });
+      return bytes;
+    }
+    if (type === "document") {
+      var mime = String(getResponseHeader(headers, "content-type") || "").toLowerCase().indexOf("html") >= 0
+        ? "text/html"
+        : "application/xml";
+      return typeof DOMParser === "function" ? new DOMParser().parseFromString(text, mime) : text;
+    }
+    return text;
+  }
+
+  return { decode: decode };
+}
+
+module.exports = { createGmResponseValue };
+
+};
+
+__imtFactories["owned-window"] = function (module, exports, require) {
+"use strict";
+
+function presentWindow(ownedWindow) {
+  try {
+    if (typeof ownedWindow.isMinimized === "function" && ownedWindow.isMinimized() && typeof ownedWindow.restore === "function") {
+      ownedWindow.restore();
+    }
+  } catch (error) {}
+  try { if (typeof ownedWindow.show === "function") ownedWindow.show(); } catch (error) {}
+  try { if (typeof ownedWindow.focus === "function") ownedWindow.focus(); } catch (error) {}
+}
+
+module.exports = { presentWindow: presentWindow };
+
+};
+
 __imtFactories["document-session"] = function (module, exports, require) {
 "use strict";
+
+const presentWindow = __imtRequire("owned-window").presentWindow;
 
 function windowDestroyed(documentWindow) {
   if (!documentWindow) return true;
   try { return documentWindow.isDestroyed(); } catch (error) { return true; }
-}
-
-function presentWindow(documentWindow) {
-  try {
-    if (typeof documentWindow.isMinimized === "function" && documentWindow.isMinimized() && typeof documentWindow.restore === "function") {
-      documentWindow.restore();
-    }
-  } catch (error) {}
-  try { if (typeof documentWindow.show === "function") documentWindow.show(); } catch (error) {}
-  try { if (typeof documentWindow.focus === "function") documentWindow.focus(); } catch (error) {}
 }
 
 function createDocumentWindowOptions(title, preloadPath) {
@@ -1289,6 +1494,7 @@ const RETRYABLE_HANDOFF_CODES = {
 
 function createDocumentSession(options) {
   const clearTimeoutFn = options && options.clearTimeout ? options.clearTimeout : clearTimeout;
+  const setTimeoutFn = options && options.setTimeout ? options.setTimeout : setTimeout;
   let windowRef = null;
   let generation = 0;
   let spec = null;
@@ -1404,6 +1610,21 @@ function createDocumentSession(options) {
     return true;
   }
 
+  function scheduleRefresh(documentWindow, expectedGeneration, delayMs, onRefresh) {
+    if (typeof onRefresh !== "function") return false;
+    clearRefresh();
+    const delay = Number.isFinite(delayMs) ? Math.max(0, Math.min(5000, delayMs)) : 750;
+    const timer = setTimeoutFn(function () {
+      if (runtimeRefreshTimer !== timer) return;
+      runtimeRefreshTimer = null;
+      if (!isCurrent(documentWindow, expectedGeneration)) return;
+      onRefresh();
+    }, delay);
+    runtimeRefreshTimer = timer;
+    if (timer && typeof timer.unref === "function") timer.unref();
+    return true;
+  }
+
   function isCurrent(documentWindow, expectedGeneration) {
     if (!documentWindow || windowRef !== documentWindow || windowDestroyed(documentWindow)) return false;
     if (Number.isFinite(expectedGeneration) && expectedGeneration !== generation) return false;
@@ -1473,20 +1694,15 @@ function createDocumentSession(options) {
   }
 
   return {
-    window() { return windowRef; },
     generation() { return generation; },
     spec() { return spec || {}; },
-    pendingHandoff,
     pdfDownloadSource() { return pdfDownloadSource; },
     pendingDownload() { return pendingPdfDownload; },
     isCurrent,
-    begin,
-    attach,
     open,
     clearHandoff,
     handoffOverlayState,
     setHandoffOverlay,
-    waitForHandoff,
     adoptHandoff,
     claimHandoffWhenIdle,
     scheduleHandoffRetry,
@@ -1496,13 +1712,11 @@ function createDocumentSession(options) {
       return true;
     },
     setPdfDownloadSource(source) { pdfDownloadSource = source; },
-    setRefreshTimer(timer) { runtimeRefreshTimer = timer; },
-    isRefreshTimer(timer) { return runtimeRefreshTimer === timer; },
+    scheduleRefresh,
     clearRefresh,
     cancelPendingDownload,
     setPendingDownload(pending) { pendingPdfDownload = pending; },
     isPendingDownload(pending) { return pendingPdfDownload === pending; },
-    abandonOpen,
     handleClosed(documentWindow) {
       if (windowRef !== documentWindow) return false;
       generation += 1;
@@ -1875,6 +2089,8 @@ __imtFactories["document-runtime"] = function (module, exports, require) {
 
 const { createGmElementApi } = __imtRequire("gm-element");
 const { createGmHeaders } = __imtRequire("gm-headers");
+const { createGmRequestBody } = __imtRequire("gm-request-body");
+const { createGmResponseValue } = __imtRequire("gm-response-value");
 
 const DOCUMENT_RUNTIME_WORLD_ID = 1001;
 const DOCUMENT_RUNTIME_BRIDGE_KEY = "__imtDocumentRuntimeBridge";
@@ -2272,6 +2488,8 @@ function runDocumentRuntimeBootstrap(options) {
     const hasHeader = gmHeaders.hasHeader;
     const getResponseHeader = gmHeaders.getResponseHeader;
     const responseHeadersToString = gmHeaders.responseHeadersToString;
+    const gmRequestBody = createGmRequestBody(hasHeader);
+    const gmResponseValue = createGmResponseValue(getResponseHeader);
     const bytesToBase64 = function (bytes) {
       let binary = "";
       const chunkSize = 0x8000;
@@ -2287,48 +2505,26 @@ function runDocumentRuntimeBootstrap(options) {
       return bytes;
     };
     const serializeRequestBody = async function (value, method, headers) {
-      if (value === undefined || value === null || method === "GET" || method === "HEAD") return null;
-      if (typeof value === "string") return { type: "text", data: value };
-      if (typeof URLSearchParams !== "undefined" && value instanceof URLSearchParams) {
-        if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
-        return { type: "text", data: value.toString() };
-      }
-      if (typeof Blob !== "undefined" && value instanceof Blob) {
-        return { type: "base64", data: bytesToBase64(new Uint8Array(await value.arrayBuffer())) };
-      }
-      if (value instanceof ArrayBuffer) return { type: "base64", data: bytesToBase64(new Uint8Array(value)) };
-      if (ArrayBuffer.isView(value)) {
-        return { type: "base64", data: bytesToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-      }
-      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
-      return { type: "text", data: JSON.stringify(value) };
+      return gmRequestBody.serializeIpcBody(value, method, headers, bytesToBase64);
     };
     const bridgeResponseBytes = function (response) {
       if (response && typeof response.base64 === "string" && response.base64) return base64ToBytes(response.base64);
       return new TextEncoder().encode(response && typeof response.text === "string" ? response.text : "");
     };
+    const copyResponseBytes = function (response) {
+      const bytes = bridgeResponseBytes(response);
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    };
     const bridgeResponseValue = function (response, responseType) {
-      const type = String(responseType || "text").toLowerCase();
       const text = response && typeof response.text === "string" ? response.text : "";
-      if (type === "json") return JSON.parse(text || "null");
-      if (type === "arraybuffer") {
-        const bytes = bridgeResponseBytes(response);
-        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      }
-      if (type === "blob") {
-        const bytes = bridgeResponseBytes(response);
-        const contentType = getResponseHeader(response.headers, "content-type") || "application/octet-stream";
-        return typeof Blob === "function"
-          ? new Blob([bytes], { type: contentType })
-          : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      }
-      if (type === "document" && typeof DOMParser === "function") {
-        const mime = String(getResponseHeader(response.headers, "content-type")).toLowerCase().indexOf("html") >= 0
-          ? "text/html"
-          : "application/xml";
-        return new DOMParser().parseFromString(text, mime);
-      }
-      return text;
+      const type = String(responseType || "text").toLowerCase();
+      const bytes = type === "arraybuffer" || type === "blob" ? copyResponseBytes(response) : undefined;
+      return gmResponseValue.decode({
+        responseType: responseType,
+        text: text,
+        bytes: bytes,
+        headers: response && response.headers || {},
+      });
     };
     const gmXmlHttpRequest = function (requestOptions) {
       const request = requestOptions || {};
@@ -2410,18 +2606,30 @@ function runDocumentRuntimeBootstrap(options) {
       };
     };
     const makeFetchResponse = function (response) {
-      const bytes = bridgeResponseBytes(response);
-      const text = typeof response.text === "string" ? response.text : new TextDecoder().decode(bytes);
+      let cachedBytes = null;
+      const responseBytes = function () {
+        if (!cachedBytes) cachedBytes = bridgeResponseBytes(response);
+        return cachedBytes;
+      };
       return {
         ok: Number(response.status) >= 200 && Number(response.status) < 300,
         status: Number(response.status) || 0,
         statusText: String(response.statusText || ""),
         url: String(response.finalUrl || ""),
         headers: makeFetchHeaders(response.headers || {}),
-        text: async function () { return text; },
-        json: async function () { return JSON.parse(text || "null"); },
-        arrayBuffer: async function () { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
+        text: async function () {
+          return typeof response.text === "string" ? response.text : new TextDecoder().decode(responseBytes());
+        },
+        json: async function () {
+          const source = typeof response.text === "string" ? response.text : new TextDecoder().decode(responseBytes());
+          return JSON.parse(source || "null");
+        },
+        arrayBuffer: async function () {
+          const bytes = responseBytes();
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        },
         blob: async function () {
+          const bytes = responseBytes();
           const type = this.headers.get("content-type") || "application/octet-stream";
           return typeof Blob === "function" ? new Blob([bytes], { type: type }) : bytes;
         },
@@ -2597,7 +2805,7 @@ function createDocumentRuntimeBootstrap(options) {
   const executableBootstrap = bootstrapSource.replace(marker, function () {
     return "\n" + userscriptSource + "\n";
   });
-  return "(function(createGmElementApi, createGmHeaders){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + ")";
+  return "(function(createGmElementApi, createGmHeaders, createGmRequestBody, createGmResponseValue){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + "," + createGmRequestBody.toString() + "," + createGmResponseValue.toString() + ")";
 }
 
 module.exports = {
@@ -3000,6 +3208,10 @@ var IMTExtendedPlugin = (function () {
   var _hasHeader = gmHeaders.hasHeader;
   var _getResponseHeader = gmHeaders.getResponseHeader;
   var _responseHeadersToString = gmHeaders.responseHeadersToString;
+  var createGmRequestBody = __imtRequire("gm-request-body").createGmRequestBody;
+  var gmRequestBody = createGmRequestBody(_hasHeader);
+  var createGmResponseValue = __imtRequire("gm-response-value").createGmResponseValue;
+  var gmResponseValue = createGmResponseValue(_getResponseHeader);
   var createDocumentSession = __imtRequire("document-session").createDocumentSession;
   var translationState = __imtRequire("translation-state");
   var isActiveTranslationState = translationState.isActiveTranslationState;
@@ -3037,7 +3249,7 @@ var IMTExtendedPlugin = (function () {
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
 
   var PLUGIN_ID = "immersive-translate-extended";
-  var PLUGIN_VERSION = "4.0.2";
+  var PLUGIN_VERSION = "4.0.3";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_BODY_BYTES = 8 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -3049,13 +3261,13 @@ var IMTExtendedPlugin = (function () {
 
   var GM_STORE_PREFIX = syncProtocol.GM_STORE_PREFIX;
   var IMT_CONFIG_KEY = "fullLocalUserConfig";
-  var IMT_DASH_HOSTS = {
-    "dash.immersivetranslate.com": true,
-    "app.immersivetranslate.com": true,
-    "immersivetranslate.com": true,
-    "onboarding.immersivetranslate.com": true,
-    "immersive-translate.owenyoung.com": true,
-  };
+  var userInfoSanitizer = __imtRequire("user-info");
+  var _sanitizeUserInfo = userInfoSanitizer.sanitizeUserInfo;
+  var _sanitizeTrustedUserInfo = userInfoSanitizer.sanitizeTrustedUserInfo;
+  var dashboardOrigins = __imtRequire("dashboard-origins");
+  var isDashboardOriginHost = dashboardOrigins.isDashboardOriginHost;
+  var isDashboardAppHost = dashboardOrigins.isDashboardAppHost;
+  var presentWindow = __imtRequire("owned-window").presentWindow;
   var IMT_COOKIE_HOSTS = {
     "immersivetranslate.com": true,
     "app.immersivetranslate.com": true,
@@ -3072,15 +3284,12 @@ var IMTExtendedPlugin = (function () {
   var SYNC_MAX_KEYS = syncProtocol.SYNC_MAX_KEYS;
   var SYNC_MAX_VALUE_BYTES = syncProtocol.SYNC_MAX_VALUE_BYTES;
   var SYNC_MAX_TOTAL_BYTES = syncProtocol.SYNC_MAX_TOTAL_BYTES;
-  var CONFIG_MAX_NODES = syncProtocol.CONFIG_MAX_NODES;
-  var CONFIG_MAX_ARRAY_ITEMS = syncProtocol.CONFIG_MAX_ARRAY_ITEMS;
   var SYNC_SCOPE_PORTABLE = syncProtocol.SYNC_SCOPE_PORTABLE;
   // Keep the wire value stable for older preload snapshots. The scope now
   // carries the complete credential-redacted advanced configuration.
   var SYNC_SCOPE_DASHBOARD = syncProtocol.SYNC_SCOPE_DASHBOARD;
   var SYNC_TOP_KEYS = { fullLocalUserConfig: true, userInfo: true, user_info: true, subscriptionInfo: true, translateServices: true, translateServiceConfig: true, memberConfig: true, serviceConfig: true, translatorConfig: true, usage_limit_stats: true };
   var DASHBOARD_SYNC_KEYS = { fullLocalUserConfig: true, userInfo: true, subscriptionInfo: true };
-  var USER_INFO_FIELD_LIMITS = { id: 256, userId: 256, email: 512, nickname: 1024, avatar: 8192, userType: 64 };
   var DASHBOARD_PKCE_ARGUMENT_PREFIX = "--imt-pkce-channel=";
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
   var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
@@ -3345,32 +3554,6 @@ var IMTExtendedPlugin = (function () {
     return result;
   }
 
-  function _copySafeUserInfoFields(source) {
-    var result = {};
-    Object.keys(USER_INFO_FIELD_LIMITS).forEach(function (key) {
-      var value = source[key]; var limit = USER_INFO_FIELD_LIMITS[key];
-      if ((key === "id" || key === "userId") && typeof value === "number" && isFinite(value)) result[key] = value;
-      else if (typeof value === "string" && value.length <= limit) result[key] = value;
-    });
-    return result;
-  }
-
-  function _sanitizeUserInfo(value, allowIdOnly) {
-    if (!value || typeof value !== "object") return null;
-    var candidates = [value];
-    if (value.data && typeof value.data === "object") candidates.push(value.data);
-    if (value.result && typeof value.result === "object") candidates.push(value.result);
-    for (var i = 0; i < candidates.length; i++) {
-      var result = _copySafeUserInfoFields(candidates[i]);
-      if (result.email || result.userId || result.nickname || (allowIdOnly && result.id !== undefined)) return result;
-    }
-    return null;
-  }
-
-  function _sanitizeTrustedUserInfo(value) {
-    return _sanitizeUserInfo(value, true);
-  }
-
   function _getStoredUserInfo() {
     var userInfo = _sanitizeTrustedUserInfo(_gmGetValue("userInfo"));
     return userInfo || _sanitizeTrustedUserInfo(_gmGetValue("user_info"));
@@ -3443,20 +3626,18 @@ var IMTExtendedPlugin = (function () {
     var url = _parseHttpUrl(value);
     if (!url || url.protocol !== "https:") return false;
     var host = url.hostname.toLowerCase();
-    if (host === "dash.immersivetranslate.com" || host === "app.immersivetranslate.com") return true;
+    if (isDashboardAppHost(host)) return true;
     return host === "immersivetranslate.com" && (url.pathname === "/options" || url.pathname.indexOf("/options/") === 0);
   }
 
   function _isTrustedDashboardNavigation(value) {
     var url = _parseHttpUrl(value);
-    return !!(url && url.protocol === "https:" && Object.prototype.hasOwnProperty.call(IMT_DASH_HOSTS, url.hostname.toLowerCase()));
+    return !!(url && url.protocol === "https:" && isDashboardOriginHost(url.hostname));
   }
 
   function _isTrustedDashboardReturnNavigation(value) {
     var url = _parseHttpUrl(value);
-    if (!url || url.protocol !== "https:") return false;
-    var host = url.hostname.toLowerCase();
-    return host === "dash.immersivetranslate.com" || host === "app.immersivetranslate.com";
+    return !!(url && url.protocol === "https:" && isDashboardAppHost(url.hostname));
   }
 
   function _shouldAttachImtCookies(value) {
@@ -3470,49 +3651,6 @@ var IMTExtendedPlugin = (function () {
   }
 
   function _encodeUtf8(value) { return new TextEncoder().encode(String(value)); }
-
-  function _joinByteArrays(parts) {
-    var length = parts.reduce(function (total, part) { return total + part.byteLength; }, 0);
-    var joined = new Uint8Array(length); var offset = 0;
-    for (var i = 0; i < parts.length; i++) { joined.set(parts[i], offset); offset += parts[i].byteLength; }
-    return joined.buffer;
-  }
-
-  async function _serializeFormData(formData, headers) {
-    var boundary = "----IMTObsidian" + Math.random().toString(16).slice(2) + Date.now().toString(16);
-    var parts = [];
-    for (var headerName in headers) if (headerName.toLowerCase() === "content-type") delete headers[headerName];
-    for (var entry of formData.entries()) {
-      var name = String(entry[0]).replace(/"/g, "%22"); var value = entry[1];
-      if (typeof value === "string") {
-        parts.push(_encodeUtf8("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n"));
-      } else {
-        var filename = String(value.name || "blob").replace(/"/g, "%22");
-        var contentType = value.type || "application/octet-stream";
-        parts.push(_encodeUtf8("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"; filename=\"" + filename + "\"\r\nContent-Type: " + contentType + "\r\n\r\n"));
-        parts.push(new Uint8Array(await value.arrayBuffer()));
-        parts.push(_encodeUtf8("\r\n"));
-      }
-    }
-    parts.push(_encodeUtf8("--" + boundary + "--\r\n"));
-    headers["Content-Type"] = "multipart/form-data; boundary=" + boundary;
-    return _joinByteArrays(parts);
-  }
-
-  async function _serializeRequestBody(data, method, headers) {
-    if (data === undefined || data === null || method === "GET" || method === "HEAD") return undefined;
-    if (typeof data === "string") return data;
-    if (typeof URLSearchParams !== "undefined" && data instanceof URLSearchParams) {
-      if (!_hasHeader(headers, "content-type")) headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
-      return data.toString();
-    }
-    if (typeof FormData !== "undefined" && data instanceof FormData) return _serializeFormData(data, headers);
-    if (typeof Blob !== "undefined" && data instanceof Blob) return data.arrayBuffer();
-    if (data instanceof ArrayBuffer) return data;
-    if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    if (!_hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
-    return JSON.stringify(data);
-  }
 
   function IMTExtendedPluginClass(app, manifest) {
     obsidian.Plugin.call(this, app, manifest);
@@ -3537,10 +3675,9 @@ var IMTExtendedPlugin = (function () {
     this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
     this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
     this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
-    this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve(); this._dashboardConfigPushSequence = 0;
+    this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
     this._userscriptRequestSequence = 0;
-    this._authCookies = ""; this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
-    this._authToken = "";
+    this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
     this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
     var pluginInstance = this;
     this._dashboardPkceHost = createDashboardPkceHost({
@@ -3556,8 +3693,7 @@ var IMTExtendedPlugin = (function () {
       if (typeof persistedToken === "string" && persistedToken) {
         var persistedUser = _getStoredUserInfo();
         this._authAdapter.applyPkceState({ token: persistedToken, userInfo: persistedUser });
-        this._authToken = this._authAdapter.getToken();
-        _mirrorCurrentAuthAliases(this._authToken, persistedUser);
+        _mirrorCurrentAuthAliases(this._authAdapter.getToken(), persistedUser);
       } else {
         _gmDeleteValueIfPresent("userInfo");
         _gmDeleteValueIfPresent("user_info");
@@ -4013,25 +4149,14 @@ var IMTExtendedPlugin = (function () {
     });
   };
 
-  IMTExtendedPluginClass.prototype._clearDocumentRuntimeRefresh = function () {
-    return this._documentSession.clearRefresh();
-  };
-
   IMTExtendedPluginClass.prototype._scheduleDocumentRuntimeRefresh = function (documentWindow, generation, delayMs) {
-    this._clearDocumentRuntimeRefresh();
     var pluginInstance = this;
-    var delay = Number.isFinite(delayMs) ? Math.max(0, Math.min(5000, delayMs)) : 750;
-    var timer = setTimeout(function () {
-      if (pluginInstance._documentSession.isRefreshTimer(timer)) pluginInstance._documentSession.setRefreshTimer(null);
-      if (!pluginInstance._documentSession.isCurrent(documentWindow, generation)) return;
+    return this._documentSession.scheduleRefresh(documentWindow, generation, delayMs, function () {
       var currentUrl = "";
       try { currentUrl = documentWindow.webContents.getURL(); } catch (e) {}
       if (!isTrustedDocumentWorkspaceUrl(currentUrl)) return;
       Promise.resolve(pluginInstance._initializeDocumentRuntime(documentWindow)).catch(function () {});
-    }, delay);
-    if (timer && typeof timer.unref === "function") timer.unref();
-    this._documentSession.setRefreshTimer(timer);
-    return true;
+    });
   };
 
   IMTExtendedPluginClass.prototype._sendDocumentPdfDownloadStatus = function (documentWindow, state, fileName, generation) {
@@ -4929,9 +5054,7 @@ var IMTExtendedPlugin = (function () {
       // A reused BrowserWindow may be minimized or hidden after another native
       // window took focus. Restore it before navigating so login never appears
       // to be blank while its document is merely not presented to the user.
-      try { if (typeof this._dashboardWindow.isMinimized === "function" && this._dashboardWindow.isMinimized() && typeof this._dashboardWindow.restore === "function") this._dashboardWindow.restore(); } catch (e) {}
-      try { if (typeof this._dashboardWindow.show === "function") this._dashboardWindow.show(); } catch (e) {}
-      try { if (typeof this._dashboardWindow.focus === "function") this._dashboardWindow.focus(); } catch (e) {}
+      presentWindow(this._dashboardWindow);
       try { this._dashboardWindow.loadURL(dashboardUrl); } catch (e) {}
       return;
     }
@@ -5092,11 +5215,9 @@ var IMTExtendedPlugin = (function () {
   IMTExtendedPluginClass.prototype._applyDashboardAuthState = function (state) {
     var result;
     try { result = this._authAdapter.applyPkceState(state); } catch (e) { return false; }
-    this._authToken = this._authAdapter.getToken();
-    this._authCookies = this._authAdapter.getCookies();
-    if (this._authToken) {
+    if (this._getAuthToken()) {
       var userInfo = this._authAdapter.getUserInfo();
-      var aliasesChanged = _mirrorCurrentAuthAliases(this._authToken, userInfo);
+      var aliasesChanged = _mirrorCurrentAuthAliases(this._getAuthToken(), userInfo);
       if (result.changed) this._authGeneration++;
       return !!(result.changed || aliasesChanged);
     }
@@ -5105,7 +5226,7 @@ var IMTExtendedPlugin = (function () {
     this._authGeneration++;
 
     // A PKCE logout must not erase a still-valid legacy cookie session.
-    if (this._authCookies) {
+    if (this._getAuthCookies()) {
       _gmDeleteValue("authToken"); _gmDeleteValue("user_token"); _gmDeleteValue("auth"); _gmDeleteValue("GoogleAccessToken");
       _gmDeleteValue("immersiveTranslateIMT_COMMON_JWT_TOKEN"); _gmDeleteValue("immersiveTranslateGoogleAccessToken");
       return true;
@@ -5119,8 +5240,6 @@ var IMTExtendedPlugin = (function () {
     this._authGeneration++;
     this._cookieReadSequence++;
     this._authAdapter.clear();
-    this._authToken = "";
-    this._authCookies = "";
     this._lastCookieHeader = "";
     var keys = ["userInfo", "user_info", "authToken", "user_token", "auth", "GoogleAccessToken", "subscriptionInfo", "immersiveTranslateIMT_COMMON_JWT_TOKEN", "immersiveTranslateGoogleAccessToken", "immersiveTranslateAuthFlow", "immersiveTranslateAuthState"];
     for (var i = 0; i < keys.length; i++) {
@@ -5141,9 +5260,8 @@ var IMTExtendedPlugin = (function () {
           if (cookieHeader === pluginInstance._lastCookieHeader) return;
           pluginInstance._lastCookieHeader = cookieHeader;
           pluginInstance._authAdapter.applyLegacyCookies(cookieHeader);
-          pluginInstance._authCookies = pluginInstance._authAdapter.getCookies();
           if (!cookieHeader) {
-            if (!pluginInstance._authToken) pluginInstance._clearDashboardAuthState();
+            if (!pluginInstance._getAuthToken()) pluginInstance._clearDashboardAuthState();
             return;
           }
           pluginInstance._authGeneration++;
@@ -5154,8 +5272,8 @@ var IMTExtendedPlugin = (function () {
     } catch (e) {}
   };
 
-  IMTExtendedPluginClass.prototype._getAuthCookies = function () { return this._authAdapter.getCookies() || this._authCookies || ""; };
-  IMTExtendedPluginClass.prototype._getAuthToken = function () { return this._authAdapter.getToken() || this._authToken || ""; };
+  IMTExtendedPluginClass.prototype._getAuthCookies = function () { return this._authAdapter.getCookies() || ""; };
+  IMTExtendedPluginClass.prototype._getAuthToken = function () { return this._authAdapter.getToken() || ""; };
 
   IMTExtendedPluginClass.prototype._fetchUserInfoViaAPI = function () {
     var authGeneration = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : this._authGeneration;
@@ -5184,7 +5302,6 @@ var IMTExtendedPlugin = (function () {
           // accessor. Keep the possible PKCE session while dropping only cookies.
           if (pluginInstance._getAuthToken() || pluginInstance._authReadInFlight) {
             pluginInstance._authAdapter.applyLegacyCookies("");
-            pluginInstance._authCookies = "";
           } else pluginInstance._clearDashboardAuthState();
         }
       }).catch(function () {});
@@ -5217,10 +5334,9 @@ var IMTExtendedPlugin = (function () {
     try { serialized = JSON.stringify(safeConfig); } catch (e) { return Promise.resolve(false); }
     if (serialized.length > SYNC_MAX_VALUE_BYTES) return Promise.resolve(false);
     var dashboardWindow = this._dashboardWindow;
-    var sequence = ++this._dashboardConfigPushSequence;
     var script = "(function(){try{return typeof window.__imt_apply_host_config==='function'?window.__imt_apply_host_config(" + serialized + "):false}catch(e){return false}})()";
     return Promise.resolve(dashboardWindow.webContents.executeJavaScript(script)).then(function (result) {
-      return sequence > 0 && result === true;
+      return result === true;
     }).catch(function () { return false; });
   };
 
@@ -5773,7 +5889,7 @@ var IMTExtendedPlugin = (function () {
       }
 
       Promise.resolve()
-        .then(function () { return _serializeRequestBody(opts.data, method, headers); })
+        .then(function () { return gmRequestBody.serializeHostBody(opts.data, method, headers); })
         .then(function (body) {
           if (settled) return null;
           return _requestUrl({ url: parsedUrl.href, method: method, headers: headers, body: body, throw: false });
@@ -5781,16 +5897,21 @@ var IMTExtendedPlugin = (function () {
         .then(function (resp) {
           if (settled || !resp) return;
           var responseHeaders = resp.headers || {};
-          var text = typeof resp.text === "string" ? resp.text : (typeof resp.json === "object" && resp.json !== null ? JSON.stringify(resp.json) : "");
+          var responseType = String(opts.responseType || "text").toLowerCase();
+          var text = typeof resp.text === "string" ? resp.text : "";
           var arrayBuffer = resp.arrayBuffer instanceof ArrayBuffer ? resp.arrayBuffer : _encodeUtf8(text).buffer;
-          var responseType = String(opts.responseType || "text").toLowerCase(); var response = text;
-          if (responseType === "arraybuffer") response = arrayBuffer;
-          else if (responseType === "blob") response = new Blob([arrayBuffer], { type: _getResponseHeader(responseHeaders, "content-type") || "application/octet-stream" });
-          else if (responseType === "json") response = typeof resp.json === "object" && resp.json !== null ? resp.json : JSON.parse(text || "null");
-          else if (responseType === "document") {
-            var mime = _getResponseHeader(responseHeaders, "content-type").toLowerCase().indexOf("html") >= 0 ? "text/html" : "application/xml";
-            response = typeof DOMParser !== "undefined" ? new DOMParser().parseFromString(text, mime) : text;
+          var json;
+          if (responseType === "json") {
+            var parsedJson = resp.json;
+            json = typeof parsedJson === "object" && parsedJson !== null ? parsedJson : undefined;
           }
+          var response = gmResponseValue.decode({
+            responseType: responseType,
+            text: text,
+            bytes: arrayBuffer,
+            json: json,
+            headers: responseHeaders,
+          });
           var payload = {
             status: resp.status || 0,
             statusText: resp.status >= 200 && resp.status < 300 ? "OK" : "",

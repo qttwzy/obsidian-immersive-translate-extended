@@ -32,8 +32,12 @@ test("active bridges distinguish the plugin version from the loaded userscript v
   const dashboardEntry = fs.readFileSync(path.join(ROOT, "plugin", "dashboard-preload.entry.js"), "utf8");
   assert.match(dashboardEntry, /require\(\"\.\/sync-protocol\"\)/);
   assert.match(dashboardEntry, /require\(\"\.\/gm-element\"\)/);
+  assert.match(dashboardEntry, /require\(\"\.\/dashboard-origins\"\)/);
+  assert.match(dashboardEntry, /require\(\"\.\/user-info\"\)/);
   assert.doesNotMatch(preload, /require\(\"\.\/sync-protocol\"\)/);
   assert.doesNotMatch(preload, /require\(\"\.\/gm-element\"\)/);
+  assert.doesNotMatch(preload, /require\(\"\.\/dashboard-origins\"\)/);
+  assert.doesNotMatch(preload, /require\(\"\.\/user-info\"\)/);
   assert.match(preload, /\$1_\$2/);
 });
 
@@ -41,7 +45,7 @@ test("Obsidian release entry embeds local runtime modules", () => {
   const main = fs.readFileSync(path.join(ROOT, "plugin", "main.js"), "utf8");
 
   assert.match(main, /__imtFactories/);
-  assert.doesNotMatch(main, /require\(\"\.\/(?:auth-session-adapter|dashboard-pkce-host|document-runtime|document-session|document-workspace|gm-element|gm-headers|runtime-contract|runtime-installer|sync-protocol|translation-state)\"\)/);
+  assert.doesNotMatch(main, /require\(\"\.\/(?:auth-session-adapter|dashboard-origins|dashboard-pkce-host|document-runtime|document-session|document-workspace|gm-element|gm-headers|gm-request-body|gm-response-value|owned-window|runtime-contract|runtime-installer|sync-protocol|translation-state|user-info)\"\)/);
 });
 
 test("runtime installation is user initiated from the official source", () => {

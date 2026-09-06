@@ -1,7 +1,7 @@
 {
   "id": "immersive-translate-extended",
   "name": "Immersive Translate Extended",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "minAppVersion": "1.12.7",
   "description": "在 Obsidian 中使用沉浸式翻译悬浮球、划词、Markdown 双语翻译与 PDF 翻译工作区",
   "author": "IMT-Extended",

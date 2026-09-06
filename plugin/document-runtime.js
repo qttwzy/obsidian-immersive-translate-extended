@@ -2,6 +2,8 @@
 
 const { createGmElementApi } = require("./gm-element");
 const { createGmHeaders } = require("./gm-headers");
+const { createGmRequestBody } = require("./gm-request-body");
+const { createGmResponseValue } = require("./gm-response-value");
 
 const DOCUMENT_RUNTIME_WORLD_ID = 1001;
 const DOCUMENT_RUNTIME_BRIDGE_KEY = "__imtDocumentRuntimeBridge";
@@ -399,6 +401,8 @@ function runDocumentRuntimeBootstrap(options) {
     const hasHeader = gmHeaders.hasHeader;
     const getResponseHeader = gmHeaders.getResponseHeader;
     const responseHeadersToString = gmHeaders.responseHeadersToString;
+    const gmRequestBody = createGmRequestBody(hasHeader);
+    const gmResponseValue = createGmResponseValue(getResponseHeader);
     const bytesToBase64 = function (bytes) {
       let binary = "";
       const chunkSize = 0x8000;
@@ -414,48 +418,26 @@ function runDocumentRuntimeBootstrap(options) {
       return bytes;
     };
     const serializeRequestBody = async function (value, method, headers) {
-      if (value === undefined || value === null || method === "GET" || method === "HEAD") return null;
-      if (typeof value === "string") return { type: "text", data: value };
-      if (typeof URLSearchParams !== "undefined" && value instanceof URLSearchParams) {
-        if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8";
-        return { type: "text", data: value.toString() };
-      }
-      if (typeof Blob !== "undefined" && value instanceof Blob) {
-        return { type: "base64", data: bytesToBase64(new Uint8Array(await value.arrayBuffer())) };
-      }
-      if (value instanceof ArrayBuffer) return { type: "base64", data: bytesToBase64(new Uint8Array(value)) };
-      if (ArrayBuffer.isView(value)) {
-        return { type: "base64", data: bytesToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
-      }
-      if (!hasHeader(headers, "content-type")) headers["Content-Type"] = "application/json";
-      return { type: "text", data: JSON.stringify(value) };
+      return gmRequestBody.serializeIpcBody(value, method, headers, bytesToBase64);
     };
     const bridgeResponseBytes = function (response) {
       if (response && typeof response.base64 === "string" && response.base64) return base64ToBytes(response.base64);
       return new TextEncoder().encode(response && typeof response.text === "string" ? response.text : "");
     };
+    const copyResponseBytes = function (response) {
+      const bytes = bridgeResponseBytes(response);
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    };
     const bridgeResponseValue = function (response, responseType) {
-      const type = String(responseType || "text").toLowerCase();
       const text = response && typeof response.text === "string" ? response.text : "";
-      if (type === "json") return JSON.parse(text || "null");
-      if (type === "arraybuffer") {
-        const bytes = bridgeResponseBytes(response);
-        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      }
-      if (type === "blob") {
-        const bytes = bridgeResponseBytes(response);
-        const contentType = getResponseHeader(response.headers, "content-type") || "application/octet-stream";
-        return typeof Blob === "function"
-          ? new Blob([bytes], { type: contentType })
-          : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      }
-      if (type === "document" && typeof DOMParser === "function") {
-        const mime = String(getResponseHeader(response.headers, "content-type")).toLowerCase().indexOf("html") >= 0
-          ? "text/html"
-          : "application/xml";
-        return new DOMParser().parseFromString(text, mime);
-      }
-      return text;
+      const type = String(responseType || "text").toLowerCase();
+      const bytes = type === "arraybuffer" || type === "blob" ? copyResponseBytes(response) : undefined;
+      return gmResponseValue.decode({
+        responseType: responseType,
+        text: text,
+        bytes: bytes,
+        headers: response && response.headers || {},
+      });
     };
     const gmXmlHttpRequest = function (requestOptions) {
       const request = requestOptions || {};
@@ -537,18 +519,30 @@ function runDocumentRuntimeBootstrap(options) {
       };
     };
     const makeFetchResponse = function (response) {
-      const bytes = bridgeResponseBytes(response);
-      const text = typeof response.text === "string" ? response.text : new TextDecoder().decode(bytes);
+      let cachedBytes = null;
+      const responseBytes = function () {
+        if (!cachedBytes) cachedBytes = bridgeResponseBytes(response);
+        return cachedBytes;
+      };
       return {
         ok: Number(response.status) >= 200 && Number(response.status) < 300,
         status: Number(response.status) || 0,
         statusText: String(response.statusText || ""),
         url: String(response.finalUrl || ""),
         headers: makeFetchHeaders(response.headers || {}),
-        text: async function () { return text; },
-        json: async function () { return JSON.parse(text || "null"); },
-        arrayBuffer: async function () { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
+        text: async function () {
+          return typeof response.text === "string" ? response.text : new TextDecoder().decode(responseBytes());
+        },
+        json: async function () {
+          const source = typeof response.text === "string" ? response.text : new TextDecoder().decode(responseBytes());
+          return JSON.parse(source || "null");
+        },
+        arrayBuffer: async function () {
+          const bytes = responseBytes();
+          return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        },
         blob: async function () {
+          const bytes = responseBytes();
           const type = this.headers.get("content-type") || "application/octet-stream";
           return typeof Blob === "function" ? new Blob([bytes], { type: type }) : bytes;
         },
@@ -724,7 +718,7 @@ function createDocumentRuntimeBootstrap(options) {
   const executableBootstrap = bootstrapSource.replace(marker, function () {
     return "\n" + userscriptSource + "\n";
   });
-  return "(function(createGmElementApi, createGmHeaders){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + ")";
+  return "(function(createGmElementApi, createGmHeaders, createGmRequestBody, createGmResponseValue){return(" + executableBootstrap + ")(" + JSON.stringify(payload) + ");})(" + createGmElementApi.toString() + "," + createGmHeaders.toString() + "," + createGmRequestBody.toString() + "," + createGmResponseValue.toString() + ")";
 }
 
 module.exports = {

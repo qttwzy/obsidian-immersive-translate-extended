@@ -43,6 +43,8 @@ function createPackageFixture(t) {
   fs.writeFileSync(path.join(pluginDir, "document-runtime.js"), '"use strict";\n');
   fs.writeFileSync(path.join(pluginDir, "gm-element.js"), '"use strict";\n');
   fs.writeFileSync(path.join(pluginDir, "gm-headers.js"), '"use strict";\n');
+  fs.writeFileSync(path.join(pluginDir, "gm-request-body.js"), '"use strict";\n');
+  fs.writeFileSync(path.join(pluginDir, "gm-response-value.js"), '"use strict";\n');
   fs.writeFileSync(path.join(projectRoot, "LICENSE"), "Fixture license\n");
   fs.writeFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "# Third-party notices\n");
 
@@ -74,6 +76,8 @@ test("package command builds exactly one complete plugin ZIP", (t) => {
     "immersive-translate-extended/document-runtime.js",
     "immersive-translate-extended/gm-element.js",
     "immersive-translate-extended/gm-headers.js",
+    "immersive-translate-extended/gm-request-body.js",
+    "immersive-translate-extended/gm-response-value.js",
     "immersive-translate-extended/main.js",
     "immersive-translate-extended/manifest.json",
     "immersive-translate-extended/styles.css",

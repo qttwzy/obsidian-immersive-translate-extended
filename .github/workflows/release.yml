@@ -34,7 +34,9 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Confirm version
-        run: test "$(node -p "require('./package.json').version")" = "${{ inputs.version }}"
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: test "$(node -p "require('./package.json').version")" = "$RELEASE_VERSION"
 
       - name: Run product checks
         run: npm run quality
@@ -45,4 +47,13 @@ jobs:
       - name: Publish prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ inputs.version }}" "$RUNNER_TEMP/plugin-package/immersive-translate-extended-${{ inputs.version }}.zip" --target "$GITHUB_SHA" --prerelease --title "Immersive Translate Extended ${{ inputs.version }}" --notes "Download the complete plugin ZIP below and follow the installation steps in README.md."
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          Download the complete plugin ZIP below and follow the installation steps in README.md.
+
+          Project-owned code is licensed under GNU GPL version 3 only (GPL-3.0-only).
+          [Corresponding source and build scripts](https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/v$RELEASE_VERSION.zip) · [Browse the source](https://github.com/$GITHUB_REPOSITORY/tree/v$RELEASE_VERSION).
+          Third-party components retain their own terms; see THIRD_PARTY_NOTICES.md in the ZIP.
+          EOF
+          gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP/plugin-package/immersive-translate-extended-$RELEASE_VERSION.zip" --target "$GITHUB_SHA" --prerelease --title "Immersive Translate Extended $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
