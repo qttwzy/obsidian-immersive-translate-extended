@@ -420,7 +420,98 @@ test("settings show install phases and distinguish the loaded runtime from the d
   const busyButton = findElement(settingTab.containerEl, (element) => element.tagName === "BUTTON" && element.textContent === "正在更新…");
   assert.ok(busyButton);
   assert.equal(busyButton.disabled, true);
+  const progress = findElement(settingTab.containerEl, (element) => element.tagName === "PROGRESS");
+  assert.ok(progress);
+  assert.equal(progress.parentNode.tagName, "LABEL");
+  assert.match(collectText(progress.parentNode), /正在写入本机文件/);
   plugin.onunload();
+});
+
+test("installation shows checking while awaiting a shared version request and retains restart feedback", async (t) => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const pluginDir = createInstalledRuntimeDirectory(t, "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\n");
+  plugin._getPluginDir = () => pluginDir;
+  plugin.loadSettings = async () => {};
+  plugin._interceptNavigation = () => {};
+  plugin._detectAndHandleConflicts = () => {};
+  plugin._activateIMT = async () => false;
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  await plugin.onload();
+  try {
+    plugin._isEngineLoaded = () => true;
+    plugin._loadedUserscriptVersion = "9.7.3";
+    const tab = addedSettingTabs[0];
+    tab.display();
+    let requests = 0;
+    let finishRequest;
+    harness.requestUrlImpl = () => {
+      requests++;
+      return new Promise((resolve) => { finishRequest = resolve; });
+    };
+
+    const check = plugin._checkLatestRuntimeVersion(true);
+    const install = plugin._installRuntimeFromOfficialSource();
+    assert.equal(plugin._getRuntimeStatus().installPhase, "checking");
+    assert.match(collectText(tab.containerEl), /正在检查官方运行时/);
+    assert.doesNotMatch(collectText(tab.containerEl), /正在下载官方运行时/);
+    assert.ok(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"));
+    assert.equal(findElement(tab.containerEl, (element) => element.textContent === "正在更新…")?.disabled, true);
+
+    finishRequest({ status: 200, text: "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\n", headers: {} });
+    await check;
+    assert.deepEqual(await install, { ok: true, version: "9.8.0", restartRequired: true });
+    assert.equal(requests, 1);
+    assert.equal(plugin._getRuntimeStatus().restartRequired, true);
+    assert.equal(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"), null);
+    assert.match(collectText(tab.containerEl), /重启后使用磁盘版本/);
+  } finally {
+    plugin.onunload();
+  }
+});
+
+test("slow runtime downloads keep progress visible and recover after failure and retry", async (t) => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const pluginDir = fs.mkdtempSync(path.join(os.tmpdir(), "imt-runtime-progress-"));
+  t.after(() => fs.rmSync(pluginDir, { recursive: true, force: true }));
+  plugin._getPluginDir = () => pluginDir;
+  plugin.loadSettings = async () => {};
+  plugin._interceptNavigation = () => {};
+  plugin._detectAndHandleConflicts = () => {};
+  plugin._activateIMT = async () => false;
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  await plugin.onload();
+  try {
+    plugin._activateIMT = async () => true;
+    plugin._startTranslationViewBridge = () => {};
+    plugin._startHostSurfaceTranslationObserver = () => {};
+    const tab = addedSettingTabs[0];
+    tab.display();
+    let finishRequest;
+    harness.requestUrlImpl = () => new Promise((resolve) => { finishRequest = resolve; });
+
+    const firstInstall = plugin._installRuntimeFromOfficialSource();
+    await tick();
+    assert.match(collectText(tab.containerEl), /正在下载官方运行时/);
+    assert.ok(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"));
+    assert.equal(findElement(tab.containerEl, (element) => element.textContent === "正在安装…")?.disabled, true);
+    finishRequest({ status: 503, text: "", headers: {} });
+    assert.equal((await firstInstall).ok, false);
+    assert.equal(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"), null);
+    assert.match(collectText(tab.containerEl), /上次安装失败，可重试/);
+    assert.equal(findElement(tab.containerEl, (element) => element.textContent === "安装运行时")?.disabled, false);
+
+    const retry = plugin._installRuntimeFromOfficialSource();
+    assert.ok(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"));
+    finishRequest({ status: 200, text: "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\n", headers: {} });
+    assert.deepEqual(await retry, { ok: true, version: "9.8.0", restartRequired: false });
+    assert.equal(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"), null);
+    assert.match(collectText(tab.containerEl), /本机已安装 v9\.8\.0/);
+    assert.equal(plugin._getRuntimeStatus().installError, "");
+  } finally {
+    plugin.onunload();
+  }
 });
 
 test("settings preserve an in-progress safe-config draft while refreshing runtime status", async (t) => {

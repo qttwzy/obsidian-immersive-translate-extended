@@ -24,6 +24,8 @@
 .imt-settings-import{display:flex;flex-direction:column;gap:8px;margin:8px 0 18px}
 .imt-settings-import textarea{width:100%;min-height:112px;padding:8px;border:1px solid var(--background-modifier-border);border-radius:4px;background-color:var(--background-modifier-form-field);color:var(--text-normal);font:12px var(--font-monospace);resize:vertical}
 .imt-settings-import-actions{display:flex;justify-content:flex-end;gap:8px}
+.imt-runtime-progress{display:flex;flex-direction:column;gap:6px;margin:0 0 16px;color:var(--text-muted);font-size:var(--font-ui-small)}
+.imt-runtime-progress progress{width:100%;height:6px}
 .imt-account-bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--background-modifier-border);border-radius:8px;margin-bottom:12px;background-color:var(--background-primary)}
 .imt-account-avatar{width:32px;height:32px;border-radius:50%;background-color:var(--background-modifier-border);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--text-muted)}
 .imt-account-info{flex:1}

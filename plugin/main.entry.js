@@ -1740,7 +1740,7 @@
     try { window[_runtimeInstallOwnerKey] = this; } catch (e) {}
     var operation = (async function () {
       try {
-        pluginInstance._setRuntimeInstallPhase("downloading");
+        pluginInstance._setRuntimeInstallPhase("checking");
         if (pluginInstance._runtimeVersionCheckPromise) {
           await pluginInstance._runtimeVersionCheckPromise;
         }
@@ -1755,6 +1755,7 @@
           Date.now() - pluginInstance._runtimeVersionCheckedAt < RUNTIME_VERSION_CHECK_TTL_MS;
         if (cacheFresh) sourceText = pluginInstance._latestRuntimeSource;
         else {
+          pluginInstance._setRuntimeInstallPhase("downloading");
           var response = await obsidian.requestUrl({ url: OFFICIAL_RUNTIME_URL, method: "GET", throw: false });
           if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
             return { ok: false, version: "" };
@@ -3726,12 +3727,12 @@
     }
     if (runtimeStatus.restartRequired) runtimeDescription += "，重启后使用磁盘版本";
     if (installing) {
-      var phaseText = runtimeStatus.installPhase === "downloading" ? "正在下载官方运行时…"
+      var phaseText = runtimeStatus.installPhase === "checking" ? "正在检查官方运行时…"
+        : runtimeStatus.installPhase === "downloading" ? "正在下载官方运行时…"
         : runtimeStatus.installPhase === "verifying" ? "正在校验脚本版本…"
         : runtimeStatus.installPhase === "writing" ? "正在写入本机文件…"
         : runtimeStatus.installPhase === "activating" ? "正在启用运行时…"
         : "正在安装运行时…";
-      runtimeDescription += "；" + phaseText;
     } else if (runtimeStatus.installError) runtimeDescription += "；上次安装失败，可重试";
     else if (runtimeStatus.latestState === "checking") runtimeDescription += "；正在检查官方当前版本…";
     else if (runtimeStatus.latestState === "error") runtimeDescription += "；暂时无法获取官方当前版本";
@@ -3757,6 +3758,11 @@
         });
       });
     });
+    if (installing) {
+      var progressLabel = containerEl.createEl("label", { cls: "imt-runtime-progress" });
+      progressLabel.createEl("span", { text: phaseText });
+      progressLabel.createEl("progress");
+    }
     if (!installing && self.plugin._shouldCheckLatestRuntimeVersion()) {
       Promise.resolve(self.plugin._checkLatestRuntimeVersion()).then(function () {
         if (!self.plugin._isUnloaded) self.display();

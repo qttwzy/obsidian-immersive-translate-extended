@@ -42,6 +42,8 @@ Immersive Translate, extended into your vault.
 3. 重启 Obsidian，在“设置 → 第三方插件”中启用 **Immersive Translate Extended**。
 4. 打开插件设置，在“翻译运行时”中按需选择安装或更新。
 
+安装过程中显示进度指示条与当前阶段：检查、下载、校验、写入或启用；失败后可重试。已在运行的引擎更新后仍需重启 Obsidian 生效。
+
 ZIP 中包含 `main.js`、`dashboard-preload.js`、`document-preload.js`、`document-runtime.js`、`gm-element.js`、`gm-headers.js`、`gm-request-body.js`、`gm-response-value.js`、`manifest.json`、`styles.css`、`LICENSE` 和 `THIRD_PARTY_NOTICES.md`。翻译运行时由设置页从官方来源安装到本机插件目录。
 
 ### 使用
@@ -90,6 +92,8 @@ This is an unofficial, community-maintained Obsidian plugin. It is not affiliate
 ### Install
 
 Download `immersive-translate-extended-<version>.zip` from [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install the translation runtime from plugin settings when needed. With UI translation enabled and the main window in bilingual or translation-only mode, detached Settings and community plugin or theme windows follow that same translation state.
+
+An installation progress indicator shows the current stage: checking, downloading, validating, writing, or activating. Failed installations can be retried. Updating an already running engine still requires an Obsidian restart.
 
 The ZIP contains `main.js`, `dashboard-preload.js`, `document-preload.js`, `document-runtime.js`, `gm-element.js`, `gm-headers.js`, `gm-request-body.js`, `gm-response-value.js`, `manifest.json`, `styles.css`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. The translation runtime is installed locally from the official source through plugin settings.
 
