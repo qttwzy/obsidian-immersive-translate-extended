@@ -8,9 +8,11 @@ const MOCK_SIDE_PANEL_HOST_KEY = "cursor-mock-side-panel-host";
 const OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE = "obsidianHostUpdateTargetLanguage";
 const OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE = "obsidianHostTranslatePage";
 const MAX_HOST_CONTENT_BRIDGE_DISPATCHER_SPAN = 128 * 1024;
-const HOST_CONTENT_BRIDGE_ANCHOR_PATTERN = /else if\(i\.type(?:===|==)["']switchTranslationMode["']\)\{/;
-const HOST_CONTENT_BRIDGE_TRANSLATE_ANCHOR_PATTERN = /else if\(i\.type(?:===|==)["']translatePage["']\)(await [A-Za-z_$][A-Za-z0-9_$]*\(r,i\.data\));/;
-const HOST_CONTENT_BRIDGE_RESPONSE_ANCHOR_PATTERN = /([A-Za-z_$][A-Za-z0-9_$]*)\(["']content["'],i\.type\);a!==void 0&&i\.id&&[A-Za-z_$][A-Za-z0-9_$]*\(i\.type,a,i\.id\)/;
+// Minified dispatcher locals change across userscript releases (i/a in 1.32.x,
+// o/i in 1.33.x). Capture the names instead of hardcoding them.
+const HOST_CONTENT_BRIDGE_ANCHOR_PATTERN = /else if\(([A-Za-z_$][A-Za-z0-9_$]*)\.type(?:===|==)["']switchTranslationMode["']\)\{/;
+const HOST_CONTENT_BRIDGE_TRANSLATE_ANCHOR_PATTERN = /else if\(([A-Za-z_$][A-Za-z0-9_$]*)\.type(?:===|==)["']translatePage["']\)(await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*,\1\.data\));/;
+const HOST_CONTENT_BRIDGE_RESPONSE_ANCHOR_PATTERN = /([A-Za-z_$][A-Za-z0-9_$]*)\(["']content["'],([A-Za-z_$][A-Za-z0-9_$]*)\.type\);([A-Za-z_$][A-Za-z0-9_$]*)!==void 0&&\2\.id&&[A-Za-z_$][A-Za-z0-9_$]*\(\2\.type,\3,\2\.id\)/;
 
 const MOCK_SIDE_PANEL_DECLARATION = /([A-Za-z_$][A-Za-z0-9_$]*\s*=\s*)(\d+)(\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(["'])mock-side-panel-width\4\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(["'])cursor-mock-side-panel-host\5)/;
 
@@ -186,15 +188,21 @@ function patchUserscriptHostContentBridge(source) {
   const translateArrowScope = findEnclosingArrowFunctionBodyStart(source, translateAnchors[0].index);
   const switchArrowScope = findEnclosingArrowFunctionBodyStart(source, switchAnchors[0].index);
   const responseArrowScope = findEnclosingArrowFunctionBodyStart(source, responseAnchors[0].index);
+  const messageVar = translateAnchors[0][1];
+  if (messageVar !== switchAnchors[0][1] || messageVar !== responseAnchors[0][2]) {
+    return unchanged(source, "ambiguous-anchor");
+  }
   if (translateAnchors[0].index >= switchAnchors[0].index || switchAnchors[0].index >= responseAnchors[0].index || dispatcherSpan > MAX_HOST_CONTENT_BRIDGE_DISPATCHER_SPAN || translateArrowScope !== switchArrowScope || switchArrowScope !== responseArrowScope || !anchorsShareDispatcherScope(source, translateAnchors[0].index, responseAnchors[0].index)) {
     return unchanged(source, "ambiguous-anchor");
   }
 
-  const translateInvocation = translateAnchors[0][1];
+  const translateInvocation = translateAnchors[0][2];
   const contentTransport = responseAnchors[0][1];
+  const resultVar = responseAnchors[0][3];
+  const targetLanguageVar = "__imtTargetLanguage";
   const hostBridgeSource =
-    'else if(i.type==="' + OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE + '"){let o=i.data?.targetLanguage;if(typeof o==="string"&&o.trim().length>0&&o.length<=64){await ' + contentTransport + '({type:"content",topFrame:!0,forwardToSubFrames:!0},{method:"updateTargetLanguage",data:{targetLanguage:o.trim(),hasPageTranslationStarted:i.data?.hasPageTranslationStarted===!0,trigger:"obsidianHost"}}),a={success:!0}}else a={success:!1,error:"invalid-target-language"}}' +
-    'else if(i.type==="' + OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE + '")' + translateInvocation + ',a={success:!0};';
+    'else if(' + messageVar + '.type==="' + OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE + '"){let ' + targetLanguageVar + '=' + messageVar + '.data?.targetLanguage;if(typeof ' + targetLanguageVar + '==="string"&&' + targetLanguageVar + '.trim().length>0&&' + targetLanguageVar + '.length<=64){await ' + contentTransport + '({type:"content",topFrame:!0,forwardToSubFrames:!0},{method:"updateTargetLanguage",data:{targetLanguage:' + targetLanguageVar + '.trim(),hasPageTranslationStarted:' + messageVar + '.data?.hasPageTranslationStarted===!0,trigger:"obsidianHost"}}),' + resultVar + '={success:!0}}else ' + resultVar + '={success:!1,error:"invalid-target-language"}}' +
+    'else if(' + messageVar + '.type==="' + OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE + '")' + translateInvocation + ',' + resultVar + '={success:!0};';
 
   return {
     source: source.replace(switchAnchors[0][0], hostBridgeSource + switchAnchors[0][0]),

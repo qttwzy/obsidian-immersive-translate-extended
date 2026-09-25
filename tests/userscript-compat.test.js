@@ -12,6 +12,7 @@ const {
 } = require("../plugin/userscript-compat");
 const {
   actual1328HostBridgeFixture,
+  actual1332HostBridgeFixture,
   hostBridgeFixture,
   renamedTransportHostBridgeFixture,
 } = require("./helpers/userscript-host-bridge");
@@ -84,6 +85,42 @@ test("host bridge patch supports the actual 1.32.8 dispatcher shape", async () =
   assert.deepEqual(translateResult.calls, [
     ["translate", {}, { targetLanguage: "ja" }],
     ["response", OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE, { success: true }, "translate-1328"],
+  ]);
+});
+
+test("host bridge patch supports the actual 1.33.2 dispatcher shape", async () => {
+  const source = actual1332HostBridgeFixture();
+  const result = patchUserscriptHostContentBridge(source);
+
+  assert.equal(result.changed, true);
+  assert.equal(result.reason, "patched");
+  assert.equal(result.source.includes('o.type==="' + OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE + '"'), true);
+  assert.equal(result.source.includes('o.type==="' + OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE + '"'), true);
+  assert.equal(result.source.includes("hasPageTranslationStarted:o.data?.hasPageTranslationStarted===!0"), true);
+  assert.equal(result.source.includes("await E1t(r,o.data),i={success:!0}"), true);
+
+  const handler = new Function(result.source + "\nreturn hostHandler;")();
+  const targetResult = await handler({}, JSON.stringify({
+    id: "target-1332",
+    type: OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE,
+    data: { targetLanguage: " ja ", hasPageTranslationStarted: true },
+  }));
+  const translateResult = await handler({}, JSON.stringify({
+    id: "translate-1332",
+    type: OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE,
+    data: { targetLanguage: "ja" },
+  }));
+
+  assert.deepEqual(targetResult.i, { success: true });
+  assert.deepEqual(targetResult.calls, [[
+    "Ae",
+    { type: "content", topFrame: true, forwardToSubFrames: true },
+    { method: "updateTargetLanguage", data: { targetLanguage: "ja", hasPageTranslationStarted: true, trigger: "obsidianHost" } },
+  ], ["response", OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE, { success: true }, "target-1332"]]);
+  assert.deepEqual(translateResult.i, { success: true });
+  assert.deepEqual(translateResult.calls, [
+    ["translate", {}, { targetLanguage: "ja" }],
+    ["response", OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE, { success: true }, "translate-1332"],
   ]);
 });
 

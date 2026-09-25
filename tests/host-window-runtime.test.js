@@ -288,6 +288,77 @@ test("watchHostSurfaces pokes added settings and market nodes", () => {
   assert.equal(timers.length, 0);
 });
 
+test("watchHostSurfaces skips scheduling when shouldPoke rejects inactive translation", () => {
+  const harness = createMainSurfaceHarness();
+  const pokes = [];
+  const timers = [];
+  const manager = createHostWindowRuntimeManager({ activate() { return true; } });
+  assert.equal(manager.watchHostSurfaces({
+    document: harness.document,
+    MutationObserver: harness.FakeMutationObserver,
+    shouldPoke() { return false; },
+    poke() { pokes.push("poke"); },
+    pokeDelay: 160,
+    setTimeout(fn) { timers.push(fn); return timers.length; },
+    clearTimeout() {},
+  }), true);
+
+  harness.observers[0].callback([{
+    addedNodes: [createElement(["mod-settings"], harness.body)],
+  }]);
+  assert.equal(timers.length, 0);
+  assert.deepEqual(pokes, []);
+});
+
+test("watchHostSurfaces binds debounce to the scheduling intent and drops stale pokes", () => {
+  const harness = createMainSurfaceHarness();
+  const pokes = [];
+  const timers = [];
+  let intent = 0;
+  const manager = createHostWindowRuntimeManager({ activate() { return true; } });
+  assert.equal(manager.watchHostSurfaces({
+    document: harness.document,
+    MutationObserver: harness.FakeMutationObserver,
+    setTimeout(fn) { timers.push(fn); return timers.length; },
+    clearTimeout() {},
+    getIntent() { return intent; },
+    isIntentCurrent(token) { return token === intent; },
+    shouldPoke() { return true; },
+    poke() { pokes.push(intent); },
+    pokeDelay: 160,
+  }), true);
+
+  harness.observers[0].callback([{ addedNodes: [createElement(["tooltip"], harness.body)] }]);
+  assert.equal(timers.length, 1);
+  intent = 1;
+  timers[0]();
+  assert.deepEqual(pokes, []);
+});
+
+test("cancelScheduledHostSurfacePoke drops the pending debounce", () => {
+  const harness = createMainSurfaceHarness();
+  const pokes = [];
+  const timers = [];
+  const cleared = [];
+  const manager = createHostWindowRuntimeManager({ activate() { return true; } });
+  assert.equal(manager.watchHostSurfaces({
+    document: harness.document,
+    MutationObserver: harness.FakeMutationObserver,
+    setTimeout(fn) { timers.push(fn); return timers.length; },
+    clearTimeout(id) { cleared.push(id); },
+    shouldPoke() { return true; },
+    poke() { pokes.push("poke"); },
+    pokeDelay: 160,
+  }), true);
+
+  harness.observers[0].callback([{ addedNodes: [createElement(["menu"], harness.body)] }]);
+  assert.equal(timers.length, 1);
+  assert.equal(manager.cancelScheduledHostSurfacePoke(), true);
+  assert.equal(cleared.length, 1);
+  timers[0]();
+  assert.deepEqual(pokes, []);
+});
+
 test("host-surface watching can stop while translation-state watching continues", () => {
   const harness = createMainSurfaceHarness();
   const stateChanges = [];

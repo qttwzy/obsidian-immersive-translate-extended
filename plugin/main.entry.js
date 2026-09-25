@@ -1,4 +1,4 @@
-﻿var IMTExtendedPlugin = (function () {
+var IMTExtendedPlugin = (function () {
   "use strict";
 
   var obsidian = require("obsidian");
@@ -318,8 +318,8 @@
   function _classifyUserscriptConfigChange(config, previousConfig) {
     var next = config && typeof config === "object" ? config : {};
     var previous = previousConfig && typeof previousConfig === "object" ? previousConfig : null;
-    var nextMode = next.translationMode === "dual" || next.translationMode === "translation" ? next.translationMode : "";
-    var previousMode = previous && (previous.translationMode === "dual" || previous.translationMode === "translation") ? previous.translationMode : "";
+    var nextMode = isActiveTranslationState(next.translationMode) ? next.translationMode : "";
+    var previousMode = previous && isActiveTranslationState(previous.translationMode) ? previous.translationMode : "";
     if (!previous) return { effect: "retranslate", modeChanged: false, nextMode: nextMode, targetLanguageChanged: false, translationServiceChanged: false };
     var changedPaths = _collectChangedConfigPaths(previous, next, "", [], 0).filter(function (path) { return !!path; });
     var modeChanged = !!nextMode && nextMode !== previousMode;
@@ -483,11 +483,15 @@
     this._translationViewBridge = null;
     this._hostWindowRuntimeManager = null;
     this._hostWindowUserscriptSource = "";
+    this._hostWindowUserscriptBridgeReady = null;
+    this._hostBridgeReady = null;
+    this._configRestoreDepth = 0;
     this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
     this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
     this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
     this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
     this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
+    this._translationIntentSequence = 0;
     this._userscriptRequestSequence = 0;
     this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
     this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
@@ -567,7 +571,7 @@
   };
 
   IMTExtendedPluginClass.prototype.onunload = function () {
-    this._isUnloaded = true; this._activationGeneration++; this._runtimeInstallGeneration++; this._runtimeVersionCheckGeneration++; this._initialized = false;
+    this._isUnloaded = true; this._activationGeneration++; this._runtimeInstallGeneration++; this._runtimeVersionCheckGeneration++; this._translationIntentSequence++; this._initialized = false;
     try { if (window[_runtimeInstallOwnerKey] === this) delete window[_runtimeInstallOwnerKey]; } catch (e) {}
     this._clearStartupTimers();
     if (this._translationViewBridge) { this._stopTranslationViewBridge(); }
@@ -1649,6 +1653,13 @@
     var record = this._windowRuntimeRecord(runtimeWindow);
     record.engineLoaded = true;
     record.userscriptVersion = version;
+    try {
+      var state = runtimeWindow[_engineStateKey];
+      if (state && state.hostBridgeReady === true) record.hostBridgeReady = true;
+      else if (state && state.hostBridgeReady === false) record.hostBridgeReady = false;
+      else record.hostBridgeReady = null;
+      if (runtimeWindow === window) this._hostBridgeReady = record.hostBridgeReady;
+    } catch (e) {}
     return version;
   };
 
@@ -3045,7 +3056,7 @@
     var data = { trigger: "config_change", triggerSource: "obsidianHost" };
     if (typeof source.targetLanguage === "string" && source.targetLanguage) data.targetLanguage = source.targetLanguage;
     if (typeof source.translationService === "string" && source.translationService) data.translationService = source.translationService;
-    if (source.translationMode === "dual" || source.translationMode === "translation") data.translationMode = source.translationMode;
+    if (isActiveTranslationState(source.translationMode)) data.translationMode = source.translationMode;
     return data;
   };
 
@@ -3053,6 +3064,9 @@
     var runtimeWindow = targetWindow || window;
     var runtimeDocument = runtimeWindow.document || document;
     if (!this._isEngineLoaded(runtimeWindow)) return Promise.resolve(false);
+    if ((type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE) && !this._isHostBridgeReady(runtimeWindow)) {
+      return Promise.resolve(false);
+    }
     var requestId = "obsidian-runtime-" + Date.now() + "-" + (++this._userscriptRequestSequence);
     var RuntimeCustomEvent = runtimeWindow.CustomEvent || CustomEvent;
     if (typeof runtimeDocument.addEventListener !== "function" || typeof runtimeDocument.removeEventListener !== "function") {
@@ -3098,7 +3112,7 @@
     }).then(function (themeApplied) { return miniConfigApplied || themeApplied === true; }).catch(function () { return miniConfigApplied; });
   };
 
-  IMTExtendedPluginClass.prototype._applyUserscriptTranslationInputChange = function (config, change, activeState, runtimeSequence, targetWindow) {
+  IMTExtendedPluginClass.prototype._applyUserscriptTranslationInputChange = function (config, change, activeState, runtimeSequence, targetWindow, intentSequence) {
     var runtimeWindow = targetWindow || window;
     if (!change || (!change.targetLanguageChanged && !change.translationServiceChanged)) return Promise.resolve(false);
     var pluginInstance = this; var contextReady = Promise.resolve(true);
@@ -3113,7 +3127,10 @@
     return Promise.resolve(contextReady).then(function (applied) {
       if (applied === false) return false;
       if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return false;
+      if (intentSequence !== undefined && !pluginInstance._isActiveTranslationIntent(intentSequence)) return false;
       if (!activeState) return true;
+      var currentState = pluginInstance._getActiveTranslationState(runtimeWindow === window ? runtimeWindow : window);
+      if (!isActiveTranslationState(currentState)) return true;
       return pluginInstance._requestUserscriptDocumentMessage(
         OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE,
         pluginInstance._buildUserscriptPageTranslationData(config),
@@ -3128,15 +3145,24 @@
     var runtimeContext = context && typeof context === "object" ? context : {};
     var change = runtimeContext.change || _classifyUserscriptConfigChange(config, previousConfig);
     var runtimeSequence = runtimeContext.runtimeSequence;
-    var sourceState = runtimeContext.activeState === "dual" || runtimeContext.activeState === "translation" ? runtimeContext.activeState : "";
-    var desiredState = runtimeContext.replayState === "dual" || runtimeContext.replayState === "translation" ? runtimeContext.replayState : sourceState;
+    var intentSequence = runtimeContext.intentSequence;
+    var sourceState = isActiveTranslationState(runtimeContext.activeState) ? runtimeContext.activeState : "";
+    var desiredState = isActiveTranslationState(runtimeContext.replayState) ? runtimeContext.replayState : sourceState;
     var translationInputsChanged = change.targetLanguageChanged || change.translationServiceChanged;
     var tasks = [];
     this._hostWindowRuntimeManager.forEachActive(function (runtimeWindow) {
       try { pluginInstance._applyRuntimeConfig(runtimeWindow); } catch (e) {}
       tasks.push(Promise.resolve(pluginInstance._syncUserscriptRuntimeConfig(config, previousConfig, runtimeWindow)).catch(function () { return false; }).then(function (synced) {
         if (pluginInstance._isUnloaded || (runtimeSequence !== undefined && runtimeSequence !== pluginInstance._configRuntimeSequence)) return false;
-        if (!pluginInstance.settings.uiTranslateEnabled || !sourceState) {
+        // Stale tasks drop out with no side effects so a reopened session is untouched.
+        if (intentSequence !== undefined && !pluginInstance._isActiveTranslationIntent(intentSequence)) {
+          return false;
+        }
+        var liveMainState = pluginInstance._getActiveTranslationState(window);
+        // Main window is authoritative: only continue while it is active.
+        var followMode = isActiveTranslationState(liveMainState) ? liveMainState : "";
+        if (followMode && change.modeChanged && isActiveTranslationState(desiredState)) followMode = desiredState;
+        if (!pluginInstance.settings.uiTranslateEnabled || !isActiveTranslationState(followMode)) {
           try {
             if (typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
               runtimeWindow.immersiveTranslateSwitchTranslateState("original");
@@ -3145,8 +3171,9 @@
           return synced;
         }
         if (translationInputsChanged) {
-          return pluginInstance._applyUserscriptTranslationInputChange(config, change, sourceState, runtimeSequence, runtimeWindow).then(function (applied) {
+          return pluginInstance._applyUserscriptTranslationInputChange(config, change, followMode, runtimeSequence, runtimeWindow, intentSequence).then(function (applied) {
             if (!applied || !change.modeChanged || !desiredState || desiredState === sourceState) return applied;
+            if (intentSequence !== undefined && !pluginInstance._isActiveTranslationIntent(intentSequence)) return false;
             var switched = pluginInstance._dispatchUserscriptTranslationMode(desiredState, runtimeWindow);
             if (!switched && typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
               try {
@@ -3159,7 +3186,7 @@
           });
         }
         if (change.modeChanged || (runtimeContext.retranslate && change.effect === "retranslate")) {
-          return pluginInstance._pokeHostSurfaceTranslation(runtimeWindow, desiredState);
+          return pluginInstance._pokeHostSurfaceTranslation(runtimeWindow, followMode);
         }
         return synced;
       }));
@@ -3175,14 +3202,20 @@
     this._applyRuntimeConfig();
     this._notifyUserscriptConfigChange();
     var pluginInstance = this; var runtimeSequence = ++this._configRuntimeSequence;
+    var intentSequence = this._translationIntentSequence;
     if (this._configReplayTimer) { clearTimeout(this._configReplayTimer); this._configReplayTimer = null; }
     var change = _classifyUserscriptConfigChange(config, previousConfig);
     var activeState = retranslate || change.modeChanged ? this._getActiveTranslationState() : "";
     var replayState = change.modeChanged && change.nextMode ? change.nextMode : activeState;
     var translationInputsChanged = change.targetLanguageChanged || change.translationServiceChanged;
     var shouldRetranslate = !!retranslate && change.effect === "retranslate" && !translationInputsChanged;
+    var intentCurrent = function () {
+      return pluginInstance._isActiveTranslationIntent(intentSequence) &&
+        runtimeSequence === pluginInstance._configRuntimeSequence;
+    };
     var repaintTheme = function () {
       if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return Promise.resolve(false);
+      if (!intentCurrent()) return Promise.resolve(false);
       var themeData = pluginInstance._buildUserscriptThemeConfigData(config);
       if (Object.keys(themeData).length <= 1) return Promise.resolve(false);
       return Promise.resolve(pluginInstance._requestUserscriptDocumentMessage("updateTranslationThemeConfig", themeData)).catch(function () { return false; });
@@ -3193,6 +3226,7 @@
       pluginInstance._configReplayTimer = setTimeout(function () {
         pluginInstance._configReplayTimer = null;
         if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return;
+        if (!intentCurrent()) return;
         try {
           var replayResult = window.immersiveTranslateSwitchTranslateState(replayState);
           Promise.resolve(replayResult).catch(function () { return false; }).then(repaintTheme);
@@ -3201,19 +3235,34 @@
     };
     var restoreAndReplay = function () {
       if (!activeState || typeof window.immersiveTranslateSwitchTranslateState !== "function") return;
-      try { Promise.resolve(window.immersiveTranslateSwitchTranslateState("original")).catch(function () {}).then(replay); }
-      catch (e) { replay(); }
+      if (!intentCurrent()) return;
+      pluginInstance._configRestoreDepth++;
+      try {
+        Promise.resolve(window.immersiveTranslateSwitchTranslateState("original")).catch(function () { return false; }).then(function () {
+          pluginInstance._configRestoreDepth = Math.max(0, pluginInstance._configRestoreDepth - 1);
+          if (!intentCurrent()) return;
+          replay();
+        });
+      } catch (e) {
+        pluginInstance._configRestoreDepth = Math.max(0, pluginInstance._configRestoreDepth - 1);
+        if (intentCurrent()) replay();
+      }
     };
     var applyVisibleState = function () {
       if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return Promise.resolve(false);
+      if (!intentCurrent()) return Promise.resolve(false);
+      var liveState = pluginInstance._getActiveTranslationState();
+      var liveActive = isActiveTranslationState(liveState);
       if (translationInputsChanged) {
-        return pluginInstance._applyUserscriptTranslationInputChange(config, change, activeState, runtimeSequence).then(function (applied) {
+        return pluginInstance._applyUserscriptTranslationInputChange(config, change, liveActive ? liveState : activeState, runtimeSequence, undefined, intentSequence).then(function (applied) {
           if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return;
+          if (!intentCurrent()) return;
           if (!applied) { restoreAndReplay(); return; }
           if (change.modeChanged && activeState && replayState && replayState !== activeState) {
             if (!pluginInstance._dispatchUserscriptTranslationMode(replayState)) { replay(); return; }
             pluginInstance._waitForUserscriptTranslationState(replayState, runtimeSequence).then(function (matched) {
               if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return;
+              if (!intentCurrent()) return;
               if (matched) repaintTheme(); else replay();
             });
             return;
@@ -3221,12 +3270,19 @@
           if (activeState) repaintTheme();
         });
       }
-      if (shouldRetranslate) { restoreAndReplay(); return Promise.resolve(true); }
+      if (shouldRetranslate) {
+        if (!liveActive && isActiveTranslationState(activeState)) { return Promise.resolve(true); }
+        restoreAndReplay();
+        return Promise.resolve(true);
+      }
       if (!activeState) return Promise.resolve(true);
       if (!change.modeChanged || !replayState || replayState === activeState) return Promise.resolve(true);
+      if (!intentCurrent()) return Promise.resolve(false);
+      if (!isActiveTranslationState(pluginInstance._getActiveTranslationState())) return Promise.resolve(true);
       if (!pluginInstance._dispatchUserscriptTranslationMode(replayState)) { replay(); return Promise.resolve(false); }
       return pluginInstance._waitForUserscriptTranslationState(replayState, runtimeSequence).then(function (matched) {
         if (pluginInstance._isUnloaded || runtimeSequence !== pluginInstance._configRuntimeSequence) return;
+        if (!intentCurrent()) return;
         if (matched) repaintTheme(); else replay();
       });
     };
@@ -3241,6 +3297,7 @@
           replayState: replayState,
           retranslate: !!retranslate,
           runtimeSequence: runtimeSequence,
+          intentSequence: intentSequence,
         }).catch(function () { return false; }).then(function () { return mainResult; });
       });
     });
@@ -3264,9 +3321,16 @@
       new obsidian.Notice("翻译范围已保存，但运行时配置无法读取；请重启 Obsidian 后重试");
       return false;
     }
+    // Invalidate earlier translation work before scheduling this scope update so
+    // the new refresh captures a fresh intent generation.
+    if (key === "uiTranslateEnabled" && !this.settings.uiTranslateEnabled) {
+      this._bumpTranslationIntentSequence();
+    }
     this._refreshUserscriptRuntime(config || {}, true, previousConfigState.valid ? previousConfigState.value : null);
     this._pushConfigToDashboard(config || undefined);
-    if (key === "uiTranslateEnabled") this._syncHostSurfacePokeObserver();
+    if (key === "uiTranslateEnabled") {
+      this._syncHostSurfacePokeObserver();
+    }
     if (key === "articleTranslateEnabled") {
       if (this.settings.articleTranslateEnabled) this._startTranslationViewBridge();
       else this._stopTranslationViewBridge();
@@ -3372,19 +3436,55 @@
     this._hostWindowRuntimeManager = null;
   };
 
+  IMTExtendedPluginClass.prototype._bumpTranslationIntentSequence = function () {
+    if (this._hostWindowRuntimeManager && typeof this._hostWindowRuntimeManager.cancelScheduledHostSurfacePoke === "function") {
+      this._hostWindowRuntimeManager.cancelScheduledHostSurfacePoke();
+    }
+    return ++this._translationIntentSequence;
+  };
+
+  IMTExtendedPluginClass.prototype._isActiveTranslationIntent = function (sequence) {
+    return !this._isUnloaded && sequence === this._translationIntentSequence;
+  };
+
+  IMTExtendedPluginClass.prototype._isPassiveTranslationMode = function (desiredMode) {
+    return !isActiveTranslationState(desiredMode);
+  };
+
+  IMTExtendedPluginClass.prototype._isHostBridgeReady = function (targetWindow) {
+    var runtimeWindow = targetWindow || window;
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (record && record.hostBridgeReady === true) return true;
+    if (record && record.hostBridgeReady === false) return false;
+    try {
+      var state = runtimeWindow[_engineStateKey];
+      if (state && state.hostBridgeReady === true) return true;
+      if (state && state.hostBridgeReady === false) return false;
+    } catch (e) {}
+    if (runtimeWindow === window) {
+      if (this._hostBridgeReady === true) return true;
+      if (this._hostBridgeReady === false) return false;
+    }
+    // Candidate source capability applies only after that source is loaded into
+    // the target window. A live child with unknown capability stays unknown so
+    // automatic host-bridge work stays gated.
+    return false;
+  };
+
   IMTExtendedPluginClass.prototype._syncHostWindowTranslationState = function () {
-    if (!this._hostWindowRuntimeManager) return false;
     var pluginInstance = this;
     var sourceState = this._getActiveTranslationState(window);
+    if (!isActiveTranslationState(sourceState) && !this._configRestoreDepth) this._bumpTranslationIntentSequence();
+    if (!this._hostWindowRuntimeManager) return false;
     var touched = false;
     this._hostWindowRuntimeManager.forEachActive(function (runtimeWindow) {
       touched = true;
-      if (sourceState === "dual" || sourceState === "translation") {
+      if (isActiveTranslationState(sourceState)) {
         pluginInstance._pokeHostSurfaceTranslation(runtimeWindow);
         return;
       }
       var runtimeState = pluginInstance._getActiveTranslationState(runtimeWindow);
-      if (runtimeState !== "dual" && runtimeState !== "translation") return;
+      if (!isActiveTranslationState(runtimeState)) return;
       try {
         if (typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
           runtimeWindow.immersiveTranslateSwitchTranslateState("original");
@@ -3394,25 +3494,16 @@
     return touched;
   };
 
-  IMTExtendedPluginClass.prototype._preferredUserscriptTranslationMode = function () {
-    return _gmGetConfig().translationMode === "translation" ? "translation" : "dual";
-  };
-
   IMTExtendedPluginClass.prototype._pokeHostSurfaceTranslation = function (targetWindow, desiredMode) {
     var runtimeWindow = targetWindow || window;
     if (this._isUnloaded || !this.settings.uiTranslateEnabled || !this._isEngineLoaded(runtimeWindow)) return false;
+    if (!this._isHostBridgeReady(runtimeWindow)) return false;
     var pluginInstance = this;
     var config = _gmGetConfig();
-    var sendTranslate = function () {
-      pluginInstance._requestUserscriptDocumentMessage(
-        OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE,
-        pluginInstance._buildUserscriptPageTranslationData(config),
-        runtimeWindow
-      );
-    };
-    var sourceState = desiredMode === "dual" || desiredMode === "translation" ? desiredMode :
+    var intentSequence = this._translationIntentSequence;
+    var sourceState = isActiveTranslationState(desiredMode) ? desiredMode :
       (runtimeWindow === window ? this._getActiveTranslationState(runtimeWindow) : this._getActiveTranslationState(window));
-    if (runtimeWindow !== window && sourceState !== "dual" && sourceState !== "translation") {
+    if (runtimeWindow !== window && !isActiveTranslationState(sourceState)) {
       try {
         if (typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
           runtimeWindow.immersiveTranslateSwitchTranslateState("original");
@@ -3420,8 +3511,26 @@
       } catch (e) {}
       return true;
     }
-    var mode = sourceState === "dual" || sourceState === "translation" ? sourceState : this._preferredUserscriptTranslationMode();
+    // Passive UI pokes only continue an already-active translation. An explicit
+    // desired mode (config retranslate / mode change) may start one.
+    if (this._isPassiveTranslationMode(desiredMode) && !isActiveTranslationState(sourceState)) {
+      return false;
+    }
+    var mode = isActiveTranslationState(sourceState) ? sourceState : desiredMode;
     var runtimeState = this._getActiveTranslationState(runtimeWindow);
+    var sendTranslate = function () {
+      if (!pluginInstance._isActiveTranslationIntent(intentSequence)) return false;
+      if (pluginInstance._isUnloaded || !pluginInstance.settings.uiTranslateEnabled || !pluginInstance._isEngineLoaded(runtimeWindow)) return false;
+      if (!pluginInstance._isHostBridgeReady(runtimeWindow)) return false;
+      var currentState = pluginInstance._getActiveTranslationState(runtimeWindow === window ? runtimeWindow : window);
+      if (!isActiveTranslationState(currentState)) return false;
+      pluginInstance._requestUserscriptDocumentMessage(
+        OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE,
+        pluginInstance._buildUserscriptPageTranslationData(config),
+        runtimeWindow
+      );
+      return true;
+    };
     if (runtimeState !== mode) {
       var switched = this._dispatchUserscriptTranslationMode(mode, runtimeWindow);
       if (!switched && typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
@@ -3447,6 +3556,12 @@
     var pluginInstance = this;
     return this._hostWindowRuntimeManager.watchHostSurfaces({
       document: document,
+      getIntent: function () { return pluginInstance._translationIntentSequence; },
+      isIntentCurrent: function (token) { return pluginInstance._isActiveTranslationIntent(token); },
+      shouldPoke: function () {
+        if (pluginInstance._isUnloaded || !pluginInstance.settings.uiTranslateEnabled) return false;
+        return isActiveTranslationState(pluginInstance._getActiveTranslationState(window));
+      },
       poke: function () { pluginInstance._pokeHostSurfaceTranslation(); },
     });
   };
@@ -3487,12 +3602,19 @@
     try { return !!(runtimeWindow[_engineStateKey] && runtimeWindow[_engineStateKey].loaded && runtimeWindow[_engineStateKey].mode === "userscript"); } catch (e) { return false; }
   };
 
-  IMTExtendedPluginClass.prototype._markEngineLoaded = function (targetWindow) {
+  IMTExtendedPluginClass.prototype._markEngineLoaded = function (targetWindow, options) {
     var runtimeWindow = targetWindow || window;
     var record = this._windowRuntimeRecord(runtimeWindow);
     record.engineLoaded = true;
+    if (options && options.hostBridgeReady !== undefined && options.hostBridgeReady !== null) {
+      record.hostBridgeReady = !!options.hostBridgeReady;
+    } else if (runtimeWindow === window) {
+      record.hostBridgeReady = this._hostBridgeReady;
+    } else {
+      record.hostBridgeReady = this._hostWindowUserscriptBridgeReady;
+    }
     if (this._loadedUserscriptVersion) record.userscriptVersion = this._loadedUserscriptVersion;
-    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion }; } catch (e) {}
+    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion, hostBridgeReady: record.hostBridgeReady }; } catch (e) {}
   };
 
   IMTExtendedPluginClass.prototype._setUserscriptRuntimeVersion = function (content) {
@@ -3539,7 +3661,7 @@
         script._imtHostRuntimeWindow = runtimeWindow;
         this._externalScripts.push(script);
         runtimeDocument.body.append(script);
-        this._markEngineLoaded(runtimeWindow);
+        this._markEngineLoaded(runtimeWindow, { hostBridgeReady: this._hostWindowUserscriptBridgeReady });
       }
       this._pokeHostSurfaceTranslation(runtimeWindow);
       return true;
@@ -3628,17 +3750,23 @@
     }
     var hostBridgePatch = patchUserscriptHostContentBridge(scriptContent);
     scriptContent = hostBridgePatch.source;
-    if (!hostBridgePatch.changed && hostBridgePatch.reason !== "already-patched") {
+    var hostBridgeReady = hostBridgePatch.changed || hostBridgePatch.reason === "already-patched";
+    if (!hostBridgeReady) {
       console.warn("[IMT-Extended] Userscript host-content compatibility patch skipped: " + hostBridgePatch.reason);
       new obsidian.Notice("当前沉浸式翻译运行时暂不支持 Dashboard 热同步；语言和翻译服务请在悬浮球中确认。");
     }
-    if (!this._isEngineLoaded()) this._setUserscriptRuntimeVersion(scriptContent);
+    this._hostWindowUserscriptBridgeReady = hostBridgeReady;
+    if (!this._isEngineLoaded()) {
+      this._hostBridgeReady = hostBridgeReady;
+      this._setUserscriptRuntimeVersion(scriptContent);
+    }
     this._hostWindowUserscriptSource = scriptContent;
     if (this._isEngineLoaded()) {
       if (this._hostWindowRuntimeManager) this._hostWindowRuntimeManager.refresh();
       return true;
     }
     if (this._appendEngineScript(scriptContent, generation)) {
+      this._markEngineLoaded(window, { hostBridgeReady: hostBridgeReady });
       if (this._hostWindowRuntimeManager) this._hostWindowRuntimeManager.refresh();
       return true;
     }

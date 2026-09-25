@@ -1936,6 +1936,7 @@ test("host surface poke follows the floating-ball translation state", () => {
   const plugin = makePlugin();
   plugin.settings.uiTranslateEnabled = true;
   plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
   plugin._getActiveTranslationState = () => "dual";
   const types = [];
   const modes = [];
@@ -1947,11 +1948,12 @@ test("host surface poke follows the floating-ball translation state", () => {
   assert.deepEqual(types, ["obsidianHostTranslatePage"]);
 });
 
-test("host surface poke starts page translation when the host is still original", () => {
+test("host surface poke does not start page translation when the host is still original", () => {
   setupRuntime();
   const plugin = makePlugin();
   plugin.settings.uiTranslateEnabled = true;
   plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
   plugin._getActiveTranslationState = () => "";
   const types = [];
   const modes = [];
@@ -1959,9 +1961,556 @@ test("host surface poke starts page translation when the host is still original"
   plugin._scheduleTimeout = (callback) => { callback(); return 1; };
   plugin._requestUserscriptDocumentMessage = (type) => { types.push(type); };
   plugin._buildUserscriptPageTranslationData = () => ({});
-  assert.equal(plugin._pokeHostSurfaceTranslation(), true);
+  assert.equal(plugin._pokeHostSurfaceTranslation(), false);
+  assert.deepEqual(modes, []);
+  assert.deepEqual(types, []);
+});
+
+test("host surface poke ignores explicit inactive attributes and empty non-active fallbacks", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  const modes = [];
+  const types = [];
+  plugin._dispatchUserscriptTranslationMode = (mode) => { modes.push(mode); return true; };
+  plugin._requestUserscriptDocumentMessage = (type) => { types.push(type); };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+
+  plugin._getActiveTranslationState = () => "";
+  assert.equal(plugin._pokeHostSurfaceTranslation(), false);
+  plugin._getActiveTranslationState = (runtimeWindow) => (runtimeWindow === window ? "original" : "original");
+  assert.equal(plugin._pokeHostSurfaceTranslation(), false);
+  plugin._getActiveTranslationState = () => "toString";
+  assert.equal(plugin._pokeHostSurfaceTranslation(), false);
+  assert.deepEqual(modes, []);
+  assert.deepEqual(types, []);
+});
+
+test("a delayed translate message is dropped after translation stops", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  let state = "original";
+  plugin._getActiveTranslationState = () => state;
+  const modes = [];
+  const types = [];
+  let delayed = null;
+  plugin._dispatchUserscriptTranslationMode = (mode) => { modes.push(mode); state = mode; return true; };
+  plugin._scheduleTimeout = (callback) => { delayed = callback; return 1; };
+  plugin._requestUserscriptDocumentMessage = (type) => { types.push(type); };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(null, "dual"), true);
   assert.deepEqual(modes, ["dual"]);
-  assert.deepEqual(types, ["obsidianHostTranslatePage"]);
+  assert.deepEqual(types, []);
+
+  state = "original";
+  plugin._bumpTranslationIntentSequence();
+  if (delayed) delayed();
+  assert.deepEqual(types, []);
+});
+
+test("rapid open-close-open does not let the previous delayed translate run", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  let state = "original";
+  plugin._getActiveTranslationState = () => state;
+  const modes = [];
+  const types = [];
+  const delayedTasks = [];
+  plugin._dispatchUserscriptTranslationMode = (mode) => { modes.push(mode); state = mode; return true; };
+  plugin._scheduleTimeout = (callback) => { delayedTasks.push(callback); return delayedTasks.length; };
+  plugin._requestUserscriptDocumentMessage = (type, data, runtimeWindow) => {
+    types.push({ type, generation: plugin._translationIntentSequence, runtimeWindow: runtimeWindow || window });
+  };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(null, "dual"), true);
+  const firstIntent = plugin._translationIntentSequence;
+  state = "original";
+  plugin._bumpTranslationIntentSequence();
+  state = "dual";
+  assert.equal(plugin._pokeHostSurfaceTranslation(null, "dual"), true);
+  assert.equal(plugin._translationIntentSequence !== firstIntent, true);
+
+  for (const task of delayedTasks) task();
+  assert.deepEqual(modes, ["dual"]);
+  assert.equal(types.length, 1);
+  assert.equal(types[0].generation, plugin._translationIntentSequence);
+});
+
+test("closing ui translation invalidates a queued delayed translate", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  let state = "original";
+  plugin._getActiveTranslationState = () => state;
+  const types = [];
+  const delayedTasks = [];
+  plugin._dispatchUserscriptTranslationMode = (mode) => { state = mode; return true; };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin._requestUserscriptDocumentMessage = (type) => { types.push(type); return true; };
+  plugin._scheduleTimeout = (callback) => { delayedTasks.push(callback); return delayedTasks.length; };
+  plugin.saveSettings = async () => true;
+  plugin._persistHostScopeConfig = () => ({ translationMode: "dual" });
+  plugin._refreshUserscriptRuntime = () => true;
+  plugin._pushConfigToDashboard = () => {};
+  plugin._syncHostSurfacePokeObserver = () => false;
+
+  // Force a mode switch so the 220ms translate path is actually queued.
+  assert.equal(plugin._pokeHostSurfaceTranslation(null, "dual"), true);
+  assert.deepEqual(types, []);
+  assert.equal(delayedTasks.length, 1);
+
+  assert.equal(await plugin._setTranslationScopeSetting("uiTranslateEnabled", false), true);
+  for (const task of delayedTasks) task();
+  assert.deepEqual(types, []);
+});
+
+test("stopping during async mode sync preserves original and drops the old mode", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._applyRuntimeConfig = () => true;
+  plugin._notifyUserscriptConfigChange = () => true;
+  plugin._buildUserscriptThemeConfigData = () => ({ triggerSource: "obsidianHost" });
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  let state = "dual";
+  plugin._getActiveTranslationState = () => state;
+  const messages = [];
+  plugin._requestUserscriptDocumentMessage = async (type) => { messages.push(type); return true; };
+  plugin._dispatchUserscriptTranslationMode = (mode) => { messages.push("switch:" + mode); state = mode; return true; };
+  plugin._waitForUserscriptTranslationState = async (mode) => { state = mode; return true; };
+
+  let releaseSync;
+  const syncGate = new Promise((resolve) => { releaseSync = resolve; });
+  let syncStarted;
+  const syncStartedSignal = new Promise((resolve) => { syncStarted = resolve; });
+  plugin._syncUserscriptRuntimeConfig = () => { syncStarted(); return syncGate; };
+
+  plugin._refreshUserscriptRuntime(
+    { translationMode: "translation", translationTheme: "mask" },
+    true,
+    { translationMode: "dual", translationTheme: "mask" },
+  );
+  await syncStartedSignal;
+  // User stop through the real state-change path.
+  state = "original";
+  plugin._syncHostWindowTranslationState();
+  releaseSync(true);
+  await plugin._configRuntimeChain;
+
+  assert.equal(state, "original");
+  assert.equal(messages.includes("switch:translation"), false);
+});
+
+test("stopped main keeps a host popout original after pending config sync", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._applyRuntimeConfig = () => true;
+  plugin._notifyUserscriptConfigChange = () => true;
+  plugin._buildUserscriptThemeConfigData = () => ({ triggerSource: "obsidianHost" });
+  let mainState = "dual";
+  let childState = "dual";
+  plugin._getActiveTranslationState = (runtimeWindow) => (runtimeWindow && runtimeWindow !== window ? childState : mainState);
+  const messages = [];
+  plugin._requestUserscriptDocumentMessage = async (type, data, runtimeWindow) => {
+    messages.push({ type, target: runtimeWindow && runtimeWindow !== window ? "child" : "main" });
+    return true;
+  };
+  plugin._dispatchUserscriptTranslationMode = (mode, runtimeWindow) => {
+    messages.push({ type: "switch:" + mode, target: runtimeWindow && runtimeWindow !== window ? "child" : "main" });
+    if (runtimeWindow && runtimeWindow !== window) childState = mode;
+    else mainState = mode;
+    return true;
+  };
+  plugin._waitForUserscriptTranslationState = async () => true;
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+
+  const childWindow = {
+    closed: false,
+    immersiveTranslateSwitchTranslateState(v) { childState = v; },
+  };
+  plugin._hostWindowRuntimeManager = {
+    forEachActive(callback) { callback(childWindow); },
+  };
+
+  let releaseSync;
+  const syncGate = new Promise((resolve) => { releaseSync = resolve; });
+  let syncStarted;
+  const syncStartedSignal = new Promise((resolve) => { syncStarted = resolve; });
+  plugin._syncUserscriptRuntimeConfig = () => { syncStarted(); return syncGate; };
+
+  const pending = plugin._syncHostWindowRuntimeConfig(
+    { translationMode: "translation", translationTheme: "mask" },
+    { translationMode: "dual", translationTheme: "mask" },
+    {
+      change: {
+        effect: "context",
+        modeChanged: true,
+        nextMode: "translation",
+        targetLanguageChanged: false,
+        translationServiceChanged: false,
+      },
+      activeState: "dual",
+      replayState: "translation",
+      retranslate: true,
+      runtimeSequence: plugin._configRuntimeSequence + 1,
+      intentSequence: plugin._translationIntentSequence,
+    },
+  );
+  // Keep runtime sequence valid for the in-flight task.
+  plugin._configRuntimeSequence = plugin._configRuntimeSequence + 1;
+  await syncStartedSignal;
+  mainState = "original";
+  plugin._syncHostWindowTranslationState();
+  assert.equal(childState, "original");
+  releaseSync(true);
+  await pending;
+  assert.equal(childState, "original");
+  assert.equal(mainState, "original");
+});
+
+test("surface debounce from a previous session does not send after reopen", async () => {
+  setupRuntime();
+  const { createHostWindowRuntimeManager } = require("../plugin/host-window-runtime");
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  let state = "dual";
+  plugin._getActiveTranslationState = () => state;
+  const messages = [];
+  plugin._requestUserscriptDocumentMessage = (type) => { messages.push(type); return true; };
+  plugin._dispatchUserscriptTranslationMode = () => true;
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+
+  const timers = [];
+  const observers = [];
+  class FakeMutationObserver {
+    constructor(callback) { this.callback = callback; observers.push(this); }
+    observe() {}
+    disconnect() {}
+  }
+  const body = { nodeType: 1, classList: { contains: (name) => name === "" }, parentNode: null };
+  const documentElement = {
+    getAttribute(name) { return name === "imt-state" ? state : null; },
+  };
+  const fakeDocument = { body, documentElement, querySelector: () => null };
+  const manager = createHostWindowRuntimeManager({ activate: () => true });
+  plugin._hostWindowRuntimeManager = manager;
+  manager.watchHostSurfaces({
+    document: fakeDocument,
+    MutationObserver: FakeMutationObserver,
+    setTimeout(fn) { timers.push(fn); return timers.length; },
+    clearTimeout() {},
+    getIntent: () => plugin._translationIntentSequence,
+    isIntentCurrent: (token) => plugin._isActiveTranslationIntent(token),
+    shouldPoke: () => true,
+    poke: () => { plugin._pokeHostSurfaceTranslation(); },
+    pokeDelay: 160,
+  });
+
+  const tooltip = { nodeType: 1, parentNode: body, classList: { contains: (c) => c === "tooltip" } };
+  observers[0].callback([{ addedNodes: [tooltip] }]);
+  assert.equal(timers.length, 1);
+  const originalEpoch = plugin._translationIntentSequence;
+  state = "original";
+  plugin._syncHostWindowTranslationState();
+  state = "dual";
+  assert.notEqual(plugin._translationIntentSequence, originalEpoch);
+  timers[0]();
+  assert.deepEqual(messages, []);
+});
+
+test("unavailable host bridge blocks automatic mode switch and host messages", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => false;
+  const messages = [];
+  plugin._dispatchUserscriptTranslationMode = (mode) => { messages.push("switch:" + mode); return true; };
+  plugin._requestUserscriptDocumentMessage = (type) => { messages.push(type); return true; };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+  let childState = "original";
+  const childWindow = {
+    immersiveTranslateSwitchTranslateState(v) { childState = v; },
+  };
+  plugin._getActiveTranslationState = (runtimeWindow) => (runtimeWindow && runtimeWindow !== window ? childState : "dual");
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(childWindow), false);
+  assert.deepEqual(messages, []);
+  assert.equal(childState, "original");
+});
+
+test("obsolete child sync must not turn off a reopened translation session", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._applyRuntimeConfig = () => true;
+  plugin._notifyUserscriptConfigChange = () => true;
+  plugin._buildUserscriptThemeConfigData = () => ({ triggerSource: "obsidianHost" });
+  let mainState = "dual";
+  let childState = "dual";
+  plugin._getActiveTranslationState = (runtimeWindow) => (runtimeWindow && runtimeWindow !== window ? childState : mainState);
+  const lateWrites = [];
+  plugin._requestUserscriptDocumentMessage = async (type) => true;
+  plugin._dispatchUserscriptTranslationMode = (mode, runtimeWindow) => {
+    if (runtimeWindow && runtimeWindow !== window) childState = mode;
+    else mainState = mode;
+    return true;
+  };
+  plugin._waitForUserscriptTranslationState = async () => true;
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+
+  const childWindow = {
+    closed: false,
+    immersiveTranslateSwitchTranslateState(v) { lateWrites.push(v); childState = v; },
+  };
+  plugin._hostWindowRuntimeManager = {
+    forEachActive(callback) { callback(childWindow); },
+    cancelScheduledHostSurfacePoke() { return true; },
+  };
+
+  let releaseSync;
+  const syncGate = new Promise((resolve) => { releaseSync = resolve; });
+  let syncStarted;
+  const syncStartedSignal = new Promise((resolve) => { syncStarted = resolve; });
+  plugin._syncUserscriptRuntimeConfig = () => { syncStarted(); return syncGate; };
+
+  const pending = plugin._syncHostWindowRuntimeConfig(
+    { translationMode: "translation", translationTheme: "mask" },
+    { translationMode: "dual", translationTheme: "mask" },
+    {
+      change: {
+        effect: "context",
+        modeChanged: true,
+        nextMode: "translation",
+        targetLanguageChanged: false,
+        translationServiceChanged: false,
+      },
+      activeState: "dual",
+      replayState: "translation",
+      retranslate: true,
+      runtimeSequence: plugin._configRuntimeSequence + 1,
+      intentSequence: plugin._translationIntentSequence,
+    },
+  );
+  plugin._configRuntimeSequence += 1;
+  await syncStartedSignal;
+
+  // User stops, then reopens; both main and child are dual again.
+  mainState = "original";
+  plugin._syncHostWindowTranslationState();
+  mainState = "dual";
+  childState = "dual";
+  lateWrites.length = 0;
+
+  releaseSync(true);
+  await pending;
+  assert.equal(childState, "dual");
+  assert.equal(mainState, "dual");
+  assert.deepEqual(lateWrites, []);
+});
+
+test("disabling ui scope applies its own visible refresh after invalidating prior work", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.settings.articleTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._applyRuntimeConfig = () => true;
+  plugin._notifyUserscriptConfigChange = () => true;
+  plugin._buildUserscriptThemeConfigData = () => ({ triggerSource: "obsidianHost" });
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin.saveSettings = async () => true;
+  plugin._pushConfigToDashboard = () => {};
+  plugin._syncHostSurfacePokeObserver = () => false;
+  plugin._syncHostWindowRuntimeConfig = () => Promise.resolve(true);
+  plugin._syncUserscriptRuntimeConfig = async () => true;
+  plugin._persistHostScopeConfig = () => ({
+    targetLanguage: "ja",
+    translationMode: "dual",
+    generalRule: { selectors: [".workspace-ribbon"] },
+  });
+  let state = "dual";
+  plugin._getActiveTranslationState = () => state;
+  const switches = [];
+  window.immersiveTranslateSwitchTranslateState = async (next) => {
+    switches.push(next);
+    state = next === "original" ? "original" : next;
+    plugin._syncHostWindowTranslationState();
+    return true;
+  };
+
+  assert.equal(await plugin._setTranslationScopeSetting("uiTranslateEnabled", false), true);
+  await plugin._configRuntimeChain;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok(switches.includes("original"), "scope shrink must run visible cleanup");
+  assert.equal(plugin._configRestoreDepth, 0);
+});
+
+test("adopting a surviving engine restores its recorded host-bridge capability", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  const messages = [];
+  plugin._requestUserscriptDocumentMessage = (type) => { messages.push(type); return true; };
+  plugin._dispatchUserscriptTranslationMode = (mode) => { messages.push("switch:" + mode); return true; };
+  plugin._buildUserscriptPageTranslationData = () => ({});
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+
+  // Known false from a previous patch failure survives plugin reload.
+  window.__imt_extend_engine_state__ = {
+    loaded: true,
+    mode: "userscript",
+    userscriptVersion: "1.33.2",
+    hostBridgeReady: false,
+  };
+  plugin._adoptSurvivingEngineVersion();
+  assert.equal(plugin._isHostBridgeReady(window), false);
+  assert.equal(plugin._pokeHostSurfaceTranslation(), false);
+  assert.deepEqual(messages, []);
+
+  // Known true is restored the same way.
+  window.__imt_extend_engine_state__.hostBridgeReady = true;
+  plugin._windowRuntimeLedger.resetPolyfills(window);
+  const record = plugin._windowRuntimeLedger.ensure(window);
+  record.hostBridgeReady = null;
+  plugin._hostBridgeReady = null;
+  plugin._adoptSurvivingEngineVersion();
+  assert.equal(plugin._isHostBridgeReady(window), true);
+  assert.equal(plugin._pokeHostSurfaceTranslation(), true);
+
+  // Missing field stays unknown and blocks automatic host-bridge work.
+  delete window.__imt_extend_engine_state__.hostBridgeReady;
+  record.hostBridgeReady = null;
+  plugin._hostBridgeReady = null;
+  plugin._adoptSurvivingEngineVersion();
+  assert.equal(plugin._isHostBridgeReady(window), false);
+});
+
+test("a live host popout with unknown capability does not inherit candidate source readiness", async () => {
+  setupRuntime();
+  const { patchUserscriptHostContentBridge } = require("../plugin/userscript-compat");
+  const { actual1332HostBridgeFixture } = require("./helpers/userscript-host-bridge");
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._applyRuntimeConfig = () => {};
+  plugin._installGMPolyfill = () => {};
+  plugin._installBrowserAPIPolyfill = () => {};
+  plugin._installGMFetchPolyfill = () => {};
+  const candidate = patchUserscriptHostContentBridge(actual1332HostBridgeFixture());
+  assert.equal(candidate.changed, true);
+  plugin._hostWindowUserscriptSource = candidate.source;
+  plugin._hostWindowUserscriptBridgeReady = true;
+
+  const messages = [];
+  let childState = "original";
+  let injections = 0;
+  const childWindow = {
+    closed: false,
+    __imt_extend_engine_state__: {
+      loaded: true,
+      mode: "userscript",
+      userscriptVersion: "1.32.8",
+    },
+    document: {
+      body: { append() { injections += 1; } },
+      head: {},
+      createElement: makeElement,
+      documentElement: { getAttribute: () => childState },
+      dispatchEvent(event) {
+        const payload = JSON.parse(event.detail);
+        messages.push(payload.type);
+        if (payload.type === "switchTranslationMode") childState = payload.data.translationMode;
+        return true;
+      },
+    },
+  };
+  plugin._scheduleTimeout = (fn) => { fn(); return 1; };
+  plugin._requestUserscriptDocumentMessage = async (type) => { messages.push(type); return false; };
+
+  assert.equal(plugin._isHostBridgeReady(childWindow), false);
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), true);
+  assert.equal(injections, 0);
+  assert.deepEqual(messages, []);
+  assert.equal(childState, "original");
+});
+
+test("a newly injected popout records the candidate source bridge capability", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._applyRuntimeConfig = () => {};
+  plugin._installGMPolyfill = () => {};
+  plugin._installBrowserAPIPolyfill = () => {};
+  plugin._installGMFetchPolyfill = () => {};
+  plugin._hostWindowUserscriptSource = "window.__imt_child_script__ = true;";
+  plugin._hostWindowUserscriptBridgeReady = true;
+  plugin._getActiveTranslationState = () => "original";
+  plugin._pokeHostSurfaceTranslation = () => false;
+
+  const childWindow = {
+    closed: false,
+    document: {
+      body: { append() {} },
+      head: {},
+      createElement: makeElement,
+      documentElement: makeElement("html"),
+      querySelector: () => null,
+    },
+  };
+  assert.equal(plugin._activateHostWindowRuntime(childWindow), true);
+  assert.equal(plugin._isHostBridgeReady(childWindow), true);
+  assert.equal(plugin._windowRuntimeLedger.recordFor(childWindow).hostBridgeReady, true);
+});
+
+test("a live popout keeps an explicit false host-bridge capability", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._hostWindowUserscriptSource = "window.__imt_child_script__ = true;";
+  plugin._hostWindowUserscriptBridgeReady = true;
+  const childWindow = {
+    __imt_extend_engine_state__: {
+      loaded: true,
+      mode: "userscript",
+      userscriptVersion: "1.33.2",
+      hostBridgeReady: false,
+    },
+    document: {
+      body: { append() {} },
+      head: {},
+      createElement: makeElement,
+      documentElement: makeElement("html"),
+      querySelector: () => null,
+    },
+  };
+  assert.equal(plugin._isHostBridgeReady(childWindow), false);
 });
 
 test("host surface poke targets the independent popout document and mirrors the main translation state", () => {
@@ -1970,6 +2519,7 @@ test("host surface poke targets the independent popout document and mirrors the 
   plugin.settings.uiTranslateEnabled = true;
   const childWindow = { immersiveTranslateSwitchTranslateState() {} };
   plugin._isEngineLoaded = (runtimeWindow) => runtimeWindow === childWindow;
+  plugin._isHostBridgeReady = () => true;
   plugin._getActiveTranslationState = (runtimeWindow) => runtimeWindow === window ? "dual" : "";
   const modes = [];
   const messages = [];
@@ -1992,6 +2542,7 @@ test("an independent popout stays original while the main window is not translat
     immersiveTranslateSwitchTranslateState(state) { restored.push(state); },
   };
   plugin._isEngineLoaded = (runtimeWindow) => runtimeWindow === childWindow;
+  plugin._isHostBridgeReady = () => true;
   plugin._getActiveTranslationState = () => "";
   const modes = [];
   const messages = [];

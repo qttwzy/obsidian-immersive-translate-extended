@@ -11,6 +11,7 @@ function createWindowRuntimeRecord(win) {
     browserPolyfill: false,
     gmFetchPolyfill: false,
     engineLoaded: false,
+    hostBridgeReady: null,
     userscriptVersion: "",
   };
 }
@@ -216,6 +217,16 @@ function createHostWindowRuntimeManager(options = {}) {
     return true;
   }
 
+  function cancelScheduledHostSurfacePoke() {
+    if (!hostSurface) return false;
+    if (hostSurface.pokeTimer && typeof hostSurface.clearTimeout === "function") {
+      hostSurface.clearTimeout(hostSurface.pokeTimer);
+    }
+    hostSurface.pokeTimer = null;
+    hostSurface.pokeToken = null;
+    return true;
+  }
+
   function unwatchHostSurfaces() {
     if (!disconnectWatch(hostSurface)) return false;
     hostSurface = null;
@@ -230,6 +241,8 @@ function createHostWindowRuntimeManager(options = {}) {
     const setTimeoutFn = typeof setup.input.setTimeout === "function" ? setup.input.setTimeout : setTimeout;
     const clearTimeoutFn = typeof setup.input.clearTimeout === "function" ? setup.input.clearTimeout : clearTimeout;
     const pokeDelay = Number.isFinite(setup.input.pokeDelay) ? setup.input.pokeDelay : 160;
+    const getIntent = typeof setup.input.getIntent === "function" ? setup.input.getIntent : null;
+    const isIntentCurrent = typeof setup.input.isIntentCurrent === "function" ? setup.input.isIntentCurrent : null;
     const root = doc.body;
     const observer = new setup.Observer(function (mutations) {
       if (!hostSurface) return;
@@ -243,9 +256,14 @@ function createHostWindowRuntimeManager(options = {}) {
       }
       if (!shouldPoke) return;
       if (hostSurface.pokeTimer) clearTimeoutFn(hostSurface.pokeTimer);
+      const scheduledIntent = getIntent ? getIntent() : null;
+      const pokeToken = {};
+      hostSurface.pokeToken = pokeToken;
       hostSurface.pokeTimer = setTimeoutFn(function () {
-        if (!hostSurface) return;
+        if (!hostSurface || hostSurface.pokeToken !== pokeToken) return;
         hostSurface.pokeTimer = null;
+        hostSurface.pokeToken = null;
+        if (isIntentCurrent && !isIntentCurrent(scheduledIntent)) return;
         if (typeof setup.input.poke === "function") setup.input.poke();
       }, pokeDelay);
     });
@@ -254,7 +272,7 @@ function createHostWindowRuntimeManager(options = {}) {
     } catch (error) {
       return false;
     }
-    hostSurface = { observer, pokeTimer: null, clearTimeout: clearTimeoutFn };
+    hostSurface = { observer, pokeTimer: null, pokeToken: null, clearTimeout: clearTimeoutFn };
     return true;
   }
 
@@ -272,6 +290,7 @@ function createHostWindowRuntimeManager(options = {}) {
     unwatchTranslationState,
     watchHostSurfaces,
     unwatchHostSurfaces,
+    cancelScheduledHostSurfacePoke,
     stop,
     ledger,
     recordFor: findRecord,
