@@ -5,17 +5,230 @@ const { test } = require("node:test");
 const {
   DEFAULT_MOCK_SIDE_PANEL_WIDTH,
   OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE,
+  OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE,
   OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE,
   OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH,
   patchUserscriptHostContentBridge,
+  patchUserscriptHostRegionBridge,
+  patchUserscriptHostLifecycleGuard,
   patchUserscriptSidePanelMinWidth,
 } = require("../plugin/userscript-compat");
 const {
   actual1328HostBridgeFixture,
   actual1332HostBridgeFixture,
+  actual1332HostLifecycleFixture,
   hostBridgeFixture,
+  hostRegionBridgeFixture,
+  legacyHostRegionBridgeFixture,
   renamedTransportHostBridgeFixture,
 } = require("./helpers/userscript-host-bridge");
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function lifecycleHarness(overrides = {}, source = actual1332HostLifecycleFixture()) {
+  const events = [];
+  const controls = {
+    events,
+    R9e: async (context) => context,
+    ao: async () => ({ allowed: true }),
+    Nu: async () => {},
+    Yt: async (_url, state) => ({ translationService: "test", targetLanguage: "en", config: {}, state }),
+    ...overrides,
+  };
+  const result = patchUserscriptHostLifecycleGuard(source);
+  assert.equal(result.changed, true);
+  const { k1t, fo } = new Function("controls", result.source + "\nreturn {k1t,fo};")(controls);
+  return { events, k1t, fo, result };
+}
+
+function regionHarness(version = "1.33.2", overrides = {}) {
+  const document = { roots: new Map(), querySelectorAll(selector) { return this.roots.get(selector) || []; } };
+  function element(parent = null, options = {}) {
+    const node = {
+      nodeType: 1, ownerDocument: document, isConnected: true, parentElement: parent,
+      children: [], className: options.className || "", id: options.id || "",
+      marked: !!options.marked, attributes: new Set(options.attributes || []),
+      hasAttribute(name) { return this.attributes.has(name); },
+      closest(selector) {
+        if (selector !== "[data-imt-p]") return null;
+        for (let current = this; current; current = current.parentElement) {
+          if (current.hasAttribute("data-imt-p")) return current;
+        }
+        return null;
+      },
+      contains(other) { for (let current = other; current; current = current.parentElement) if (current === this) return true; return false; },
+    };
+    if (parent) parent.children.push(node);
+    return node;
+  }
+  const policy = { active: true, generation: 7, mode: "dual" };
+  const globalObject = { __imtHostTranslationPolicy: policy };
+  const engine = overrides.engine === undefined ? { id: "engine-1", ctx: {}, translateState: "dual" } : overrides.engine;
+  const scans = [];
+  const controls = {
+    document, globalObject, engine, ur: { hasMark: node => node.marked }, Yr: () => false,
+    scan: request => { scans.push(request); request.container.marked = true; return overrides.scan?.(request); },
+    onParagraph: overrides.onParagraph,
+  };
+  const base = hostRegionBridgeFixture(version);
+  const withContent = patchUserscriptHostContentBridge(base);
+  assert.equal(withContent.reason, "patched");
+  const patched = patchUserscriptHostRegionBridge(withContent.source);
+  assert.equal(patched.reason, "patched");
+  const runtime = new Function("controls", patched.source + "\nreturn {hostHandler,setEngine(value){Ve=value}};")(controls);
+  const send = data => runtime.hostHandler({}, JSON.stringify({ id: "region-request", type: OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE, data }));
+  return { document, element, policy, globalObject, engine, scans, patched, runtime, send };
+}
+
+test("lifecycle guard rejects a stopped child after passGate resumes", async () => {
+  const gate = deferred();
+  const policy = { active: true, generation: 3 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise });
+    const task = h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host" });
+    await Promise.resolve();
+    policy.active = false;
+    policy.generation++;
+    gate.resolve({ allowed: true });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard rejects an old policy object even when generation matches", async () => {
+  const gate = deferred();
+  globalThis.__imtHostTranslationPolicy = { active: true, generation: 3 };
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise });
+    const task = h.fo({ translationService: "test", targetLanguage: "en", config: {} }, {});
+    await Promise.resolve();
+    globalThis.__imtHostTranslationPolicy = { active: true, generation: 3 };
+    gate.resolve({ allowed: true });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard rejects a stopped child after preparePreviousPage resumes", async () => {
+  const previous = deferred();
+  const policy = { active: true, generation: 3 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ Nu: () => previous.promise });
+    const task = h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host" });
+    await new Promise((resolve) => setImmediate(resolve));
+    policy.active = false;
+    policy.generation++;
+    previous.resolve();
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard rejects a stopped child after fo initial async work", async () => {
+  const initialized = deferred();
+  const policy = { active: true, generation: 8 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ Yt: () => initialized.promise });
+    const task = h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { translationMode: "dual" });
+    policy.active = false;
+    policy.generation++;
+    initialized.resolve({ translationService: "test", targetLanguage: "en", config: {} });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard avoids G3t when stop happens as Yue returns its session", async () => {
+  const policy = { active: true, generation: 8 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ onStartSession: () => { policy.active = false; policy.generation++; } });
+    await h.fo({ translationService: "test", targetLanguage: "en", config: {} }, {});
+    assert.deepEqual(h.events, ["prepareCurrentPage", "startSession"]);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard rejects stopped initial context work and old host requests after reopening", async () => {
+  const context = deferred();
+  const policy = { active: true, generation: 4 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({
+      R9e: () => context.promise,
+      Yt: () => { throw new Error("host generation must not become translation state"); },
+    });
+    const old = h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 4 });
+    policy.active = false;
+    policy.generation = 5;
+    policy.active = true;
+    context.resolve({ translationService: "test", targetLanguage: "en", config: {} });
+    await old;
+    assert.deepEqual(h.events, []);
+    await h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { state: "change", __imtHostGeneration: 4 });
+    assert.deepEqual(h.events, []);
+    await h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 5 });
+    assert.deepEqual(h.events, ["prepareCurrentPage", "startSession", "G3t"]);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard captures generation for an official child call without host data", async () => {
+  const context = deferred();
+  const policy = { active: true, generation: 6 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ R9e: () => context.promise });
+    const old = h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, {});
+    policy.active = false;
+    policy.generation = 7;
+    policy.active = true;
+    context.resolve({ translationService: "test", targetLanguage: "en", config: {} });
+    await old;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard keeps official calls without policy working", async () => {
+  delete globalThis.__imtHostTranslationPolicy;
+  const h = lifecycleHarness();
+  await h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, {});
+  assert.deepEqual(h.events, ["prepareCurrentPage", "startSession", "G3t"]);
+  assert.deepEqual(patchUserscriptHostLifecycleGuard(h.result.source), { source: h.result.source, changed: false, reason: "already-patched" });
+});
+
+test("lifecycle guard fails closed on unsupported and ambiguous source", () => {
+  const source = actual1332HostLifecycleFixture();
+  const older = source.replace("// @version 1.33.2", "// @version 1.32.8");
+  const ambiguous = source.replace("function I0(){}", "function I0(){}function I0(){}");
+  assert.deepEqual(patchUserscriptHostLifecycleGuard(older), { source: older, changed: false, reason: "unsupported-version" });
+  assert.deepEqual(patchUserscriptHostLifecycleGuard(ambiguous), { source: ambiguous, changed: false, reason: "ambiguous-anchor" });
+});
+
+test("lifecycle guard supports the renamed 1.33.3 gate and validates the whole patched shape", async () => {
+  const source = actual1332HostLifecycleFixture().replace("1.33.2", "1.33.3").replaceAll("Yue", "$ue").replaceAll("B3t", "Y3t");
+  const gate = deferred();
+  const policy = { active: true, generation: 1 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise }, source);
+    const pending = h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, {});
+    await new Promise(resolve => setImmediate(resolve));
+    policy.active = false; policy.generation++;
+    gate.resolve({ allowed: true });
+    await pending;
+    assert.deepEqual(h.events, []);
+    assert.equal(patchUserscriptHostLifecycleGuard(h.result.source).reason, "already-patched");
+    const broken = h.result.source.replace("isCurrent:__imtHostCurrent,", "");
+    assert.equal(patchUserscriptHostLifecycleGuard(broken).changed, false);
+    assert.equal(patchUserscriptHostLifecycleGuard(broken).reason, "partial-patch");
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
 
 test("adds an executable bounded Obsidian host bridge to a compatible document protocol", async () => {
   const anchor = 'else if(i.type==="switchTranslationMode"){';
@@ -267,4 +480,129 @@ test("does not rewrite an anchored value that is neither upstream nor requested"
     changed: false,
     reason: "unexpected-width",
   });
+});
+
+test("an old asynchronous previous-page restore cannot clear a reopened child session", async () => {
+  const previous = deferred();
+  const policy = { active: true, generation: 1 };
+  const restored = [];
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ Nu: () => previous.promise, onRestore: () => restored.push("restore") });
+    const old = h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    policy.active = false; policy.generation++;
+    policy.active = true; policy.generation++;
+    previous.resolve();
+    await old;
+    assert.deepEqual(restored, []);
+    assert.deepEqual(h.events, []);
+    await h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 3 });
+    assert.deepEqual(restored, ["restore"]);
+    assert.deepEqual(h.events, ["prepareCurrentPage", "startSession", "G3t"]);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+for (const version of ["1.33.2", "1.33.3"]) {
+  test(`region bridge ${version} scans only a new subtree and leaves old translation in place`, async () => {
+    const h = regionHarness(version);
+    const root = h.element(null, { marked: true });
+    const oldParagraph = h.element(root, { marked: true, attributes: ["data-imt-p"] });
+    const oldTranslation = h.element(oldParagraph, { className: "immersive-translate-target-wrapper" });
+    const newPage = h.element(root);
+    h.document.roots.set(".vertical-tab-content", [root]);
+
+    assert.deepEqual(await h.send({ regions: ["settings-content"], __imtHostGeneration: 7 }), { success: true, scannedRoots: 1 });
+    assert.equal(h.scans.length, 1);
+    assert.equal(h.scans[0].container, newPage);
+    assert.equal(h.scans[0].performancePhase, "dynamic");
+    assert.equal(oldParagraph.children[0], oldTranslation);
+    assert.equal(oldTranslation.parentElement, oldParagraph);
+    assert.equal(oldParagraph.marked, true);
+    assert.deepEqual(await h.send({ regions: ["settings-content"], __imtHostGeneration: 7 }), { success: true, scannedRoots: 0 });
+    assert.equal(h.scans.length, 1);
+    assert.deepEqual(patchUserscriptHostRegionBridge(h.patched.source), { source: h.patched.source, changed: false, reason: "already-patched" });
+  });
+}
+
+test("legacy 1.32.10 host runtime accepts the regional bridge patch", () => {
+  const source = legacyHostRegionBridgeFixture();
+  const withContent = patchUserscriptHostContentBridge(source);
+  assert.equal(withContent.reason, "patched");
+  const patched = patchUserscriptHostRegionBridge(withContent.source);
+  assert.equal(patched.reason, "patched");
+  assert.equal(patched.changed, true);
+  assert.equal((patched.source.match(/__imtHostRegionBridgeV1/g) || []).length, 1);
+  assert.doesNotThrow(() => new Function(patched.source));
+  assert.deepEqual(patchUserscriptHostRegionBridge(patched.source), { source: patched.source, changed: false, reason: "already-patched" });
+});
+
+test("region bridge rejects unknown IDs, selectors, and an unavailable engine", async () => {
+  const h = regionHarness();
+  assert.deepEqual(await h.send({ regions: [".vertical-tab-content"], __imtHostGeneration: 7 }), { success: false, error: "invalid-region" });
+  assert.deepEqual(await h.send({ regions: ["settings-content"], selector: "body", __imtHostGeneration: 7 }), { success: false, error: "invalid-region" });
+  assert.deepEqual(await h.send({ regions: [], __imtHostGeneration: 7 }), { success: false, error: "invalid-region" });
+  h.runtime.setEngine(null);
+  assert.deepEqual(await h.send({ regions: ["settings-content"], __imtHostGeneration: 7 }), { success: false, error: "engine-not-ready" });
+  assert.equal(h.scans.length, 0);
+});
+
+test("region bridge suppresses a paragraph yielded after host translation stops", async () => {
+  const pending = deferred();
+  let paragraphCallback;
+  let translated = 0;
+  const h = regionHarness("1.33.3", {
+    scan: request => { paragraphCallback = request.onParagraph; return pending.promise; },
+    onParagraph: () => { translated++; },
+  });
+  const root = h.element();
+  h.document.roots.set(".vertical-tab-content", [root]);
+  const task = h.send({ regions: ["settings-content"], __imtHostGeneration: 7 });
+  h.policy.active = false;
+  h.policy.generation++;
+  await paragraphCallback({ commonAncestorContainer: root });
+  pending.resolve();
+  assert.deepEqual(await task, { success: false, error: "stale-host-policy" });
+  assert.equal(translated, 0);
+});
+
+for (const change of ["stop", "reopen", "replace-engine", "detach-root"]) {
+  test(`region bridge stops after an awaited scan when ${change} occurs`, async () => {
+    const pending = deferred();
+    const h = regionHarness("1.33.3", { scan: () => pending.promise });
+    const root = h.element(null, { marked: true });
+    h.element(root);
+    h.element(root);
+    h.document.roots.set(".vertical-tab-content", [root]);
+
+    const task = h.send({ regions: ["settings-content"], __imtHostGeneration: 7 });
+    assert.equal(h.scans.length, 1);
+    if (change === "stop") { h.policy.active = false; h.policy.generation++; }
+    if (change === "reopen") h.globalObject.__imtHostTranslationPolicy = { active: true, generation: 7, mode: "dual" };
+    if (change === "replace-engine") h.runtime.setEngine({ id: "engine-2", ctx: {}, translateState: "dual" });
+    if (change === "detach-root") root.isConnected = false;
+    pending.resolve();
+
+    assert.deepEqual(await task, { success: false, error: change === "detach-root" ? "region-detached" : "stale-host-policy" });
+    assert.equal(h.scans.length, 1);
+  });
+}
+
+test("region bridge leaves unsupported and partially patched sources unchanged", () => {
+  const base = patchUserscriptHostContentBridge(hostRegionBridgeFixture()).source;
+  const older = base.replace("1.33.2", "1.33.1");
+  assert.deepEqual(patchUserscriptHostRegionBridge(older), { source: older, changed: false, reason: "unsupported-version" });
+  const missingGuard = base.replace("/* __imtHostLifecycleGuardV1 */", "");
+  assert.deepEqual(patchUserscriptHostRegionBridge(missingGuard), { source: missingGuard, changed: false, reason: "prerequisite-not-patched" });
+  const patched = patchUserscriptHostRegionBridge(base);
+  const partial = patched.source.replace('o.type==="obsidianHostTranslateRegions"', 'o.type==="differentMessage"');
+  assert.deepEqual(patchUserscriptHostRegionBridge(partial), { source: partial, changed: false, reason: "partial-patch" });
+});
+
+test("a tagged host retry cannot start after its child policy is removed", async () => {
+  delete globalThis.__imtHostTranslationPolicy;
+  const h = lifecycleHarness();
+  await h.k1t({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 2 });
+  await h.fo({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 2 });
+  assert.deepEqual(h.events, []);
 });

@@ -18,6 +18,7 @@ const LOCAL_MODULES = [
   ["translation-state", path.join(PLUGIN_DIR, "translation-state.js")],
   ["translation-view-bridge", path.join(PLUGIN_DIR, "translation-view-bridge.js")],
   ["host-window-runtime", path.join(PLUGIN_DIR, "host-window-runtime.js")],
+  ["host-ui-regions", path.join(PLUGIN_DIR, "host-ui-regions.js")],
   ["gm-element", path.join(PLUGIN_DIR, "gm-element.js")],
   ["gm-headers", path.join(PLUGIN_DIR, "gm-headers.js")],
   ["gm-request-body", path.join(PLUGIN_DIR, "gm-request-body.js")],

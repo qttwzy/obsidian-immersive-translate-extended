@@ -1,10 +1,13 @@
 "use strict";
 
+const { hostRegionForNode } = require("./host-ui-regions");
+
 function createWindowRuntimeRecord(win) {
   return {
     win,
     active: false,
     observer: null,
+    contentWatch: null,
     closed: false,
     onUnload: null,
     gmPolyfill: false,
@@ -12,6 +15,9 @@ function createWindowRuntimeRecord(win) {
     gmFetchPolyfill: false,
     engineLoaded: false,
     hostBridgeReady: null,
+    nativeTitle: "",
+    nativeTitleObserver: null,
+    nativeTitleRestoreQueued: false,
     userscriptVersion: "",
   };
 }
@@ -90,6 +96,43 @@ function isHostSurfaceNode(node, root) {
   return false;
 }
 
+function isTranslationOwnedNode(node, root) {
+  for (let current = node; current && current !== root; current = current.parentNode) {
+    const classes = typeof current.className === "string" ? current.className : "";
+    if (/(?:^|\s)immersive-translate-/.test(classes) || current.id === "immersive-translate-popup") return true;
+  }
+  return false;
+}
+
+function hasHostContentChange(mutations, root) {
+  return mutations.some((mutation) => {
+    if (isTranslationOwnedNode(mutation.target, root)) return false;
+    const nodes = mutation.type === "characterData" ? [mutation.target] : Array.from(mutation.addedNodes || []);
+    return nodes.some((node) => {
+      if (isTranslationOwnedNode(node, root)) return false;
+      if (node.nodeType === 3 && !String(node.nodeValue || "").trim()) return false;
+      return isHostSurfaceNode(node.nodeType === 3 ? node.parentNode : node, root);
+    });
+  });
+}
+
+function changedHostRegions(mutations, root) {
+  const regions = new Set();
+  for (const mutation of mutations) {
+    if (isTranslationOwnedNode(mutation.target, root)) continue;
+    const nodes = mutation.type === "characterData" || mutation.type === "attributes"
+      ? [mutation.target]
+      : Array.from(mutation.addedNodes || []);
+    for (const node of nodes) {
+      if (isTranslationOwnedNode(node, root)) continue;
+      if (node.nodeType === 3 && !String(node.nodeValue || "").trim()) continue;
+      const region = hostRegionForNode(node, root);
+      if (region) regions.add(region);
+    }
+  }
+  return Array.from(regions);
+}
+
 function createHostWindowRuntimeManager(options = {}) {
   const isHostWindow = typeof options.isHostWindow === "function" ? options.isHostWindow : isHostPopoutWindow;
   const activate = options.activate;
@@ -108,6 +151,7 @@ function createHostWindowRuntimeManager(options = {}) {
   function cleanup(record) {
     if (!record || record.closed) return;
     record.closed = true;
+    unwatchWindowContent(record.win);
     if (record.observer) record.observer.disconnect();
     record.observer = null;
     try { record.win.removeEventListener("unload", record.onUnload); } catch (error) {}
@@ -233,6 +277,64 @@ function createHostWindowRuntimeManager(options = {}) {
     return true;
   }
 
+  function unwatchWindowContent(win) {
+    const record = findRecord(win);
+    if (!record || !record.contentWatch) return false;
+    const watch = record.contentWatch;
+    record.contentWatch = null;
+    disconnectWatch(watch);
+    return true;
+  }
+
+  function watchWindowContent(win, hooks = {}) {
+    if (!win || win.closed || !win.document || !win.document.body) return false;
+    const record = ledger.ensure(win);
+    if (record.contentWatch) return false;
+    const Observer = hooks.MutationObserver || win.MutationObserver;
+    if (typeof Observer !== "function") return false;
+    const schedule = hooks.setTimeout || setTimeout;
+    const cancel = hooks.clearTimeout || clearTimeout;
+    const root = win.document.body;
+    const watch = { observer: null, pokeTimer: null, clearTimeout: cancel, token: null, regions: new Set() };
+    const observer = new Observer((mutations) => {
+      if (record.contentWatch !== watch || win.closed) return;
+      if (hooks.onStateChange && mutations.some(m => m.type === "attributes" && m.target === win.document.documentElement && m.attributeName === "imt-state")) hooks.onStateChange();
+      if (hooks.shouldPoke && !hooks.shouldPoke()) return;
+      const regions = changedHostRegions(mutations, root);
+      if (!regions.length) return;
+      if (watch.pokeTimer) cancel(watch.pokeTimer);
+      const intent = hooks.getIntent ? hooks.getIntent() : null;
+      if (watch.intent !== intent) watch.regions.clear();
+      watch.intent = intent;
+      for (const region of regions) watch.regions.add(region);
+      const token = {};
+      watch.token = token;
+      watch.pokeTimer = schedule(() => {
+        if (record.contentWatch !== watch || watch.token !== token || win.closed) return;
+        watch.pokeTimer = null;
+        const changed = Array.from(watch.regions);
+        watch.regions.clear();
+        if (hooks.isIntentCurrent && !hooks.isIntentCurrent(intent)) return;
+        if (hooks.shouldPoke && !hooks.shouldPoke()) return;
+      if (hooks.poke) hooks.poke(changed);
+      }, 160);
+    });
+    try {
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ["class", "aria-selected", "aria-current", "data-active", "data-state"],
+      });
+      if (hooks.onStateChange && win.document.documentElement) observer.observe(win.document.documentElement, { attributes: true, attributeFilter: ["imt-state"] });
+    }
+    catch (error) { observer.disconnect(); return false; }
+    watch.observer = observer;
+    record.contentWatch = watch;
+    return true;
+  }
+
   function watchHostSurfaces(hooks) {
     if (hostSurface) return false;
     const setup = mutationObserver(hooks, hooks && hooks.document);
@@ -247,16 +349,13 @@ function createHostWindowRuntimeManager(options = {}) {
     const observer = new setup.Observer(function (mutations) {
       if (!hostSurface) return;
       if (typeof setup.input.shouldPoke === "function" && !setup.input.shouldPoke()) return;
-      let shouldPoke = false;
-      for (let i = 0; i < mutations.length && !shouldPoke; i++) {
-        const added = mutations[i].addedNodes || [];
-        for (let n = 0; n < added.length; n++) {
-          if (isHostSurfaceNode(added[n], root)) { shouldPoke = true; break; }
-        }
-      }
-      if (!shouldPoke) return;
+      const regions = changedHostRegions(mutations, root);
+      if (!regions.length) return;
       if (hostSurface.pokeTimer) clearTimeoutFn(hostSurface.pokeTimer);
       const scheduledIntent = getIntent ? getIntent() : null;
+      if (hostSurface.intent !== scheduledIntent) hostSurface.regions.clear();
+      hostSurface.intent = scheduledIntent;
+      for (const region of regions) hostSurface.regions.add(region);
       const pokeToken = {};
       hostSurface.pokeToken = pokeToken;
       hostSurface.pokeTimer = setTimeoutFn(function () {
@@ -264,15 +363,23 @@ function createHostWindowRuntimeManager(options = {}) {
         hostSurface.pokeTimer = null;
         hostSurface.pokeToken = null;
         if (isIntentCurrent && !isIntentCurrent(scheduledIntent)) return;
-        if (typeof setup.input.poke === "function") setup.input.poke();
+        const changed = Array.from(hostSurface.regions);
+        hostSurface.regions.clear();
+        if (typeof setup.input.poke === "function") setup.input.poke(changed);
       }, pokeDelay);
     });
     try {
-      observer.observe(doc.body, { childList: true, subtree: true });
+      observer.observe(doc.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ["class", "aria-selected", "aria-current", "data-active", "data-state"],
+      });
     } catch (error) {
       return false;
     }
-    hostSurface = { observer, pokeTimer: null, pokeToken: null, clearTimeout: clearTimeoutFn };
+    hostSurface = { observer, pokeTimer: null, pokeToken: null, clearTimeout: clearTimeoutFn, regions: new Set(), intent: null };
     return true;
   }
 
@@ -289,6 +396,8 @@ function createHostWindowRuntimeManager(options = {}) {
     watchTranslationState,
     unwatchTranslationState,
     watchHostSurfaces,
+    watchWindowContent,
+    unwatchWindowContent,
     unwatchHostSurfaces,
     cancelScheduledHostSurfacePoke,
     stop,

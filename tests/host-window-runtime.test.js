@@ -10,6 +10,39 @@ const {
   isHostSurfaceNode,
 } = require("../plugin/host-window-runtime");
 
+test("an active child watches new settings content but ignores translator-owned mutations", () => {
+  const h = createWindowHarness();
+  const timers = [];
+  const pokes = [];
+  let active = true;
+  let generation = 1;
+  const manager = createHostWindowRuntimeManager({ activate: () => true });
+  const settings = { nodeType: 1, parentNode: h.body, classList: { contains: n => n === "mod-settings" } };
+  const content = { nodeType: 1, parentNode: settings, className: "vertical-tab-content", classList: { contains: () => false } };
+  const item = { nodeType: 1, parentNode: content, className: "setting-item-name", classList: { contains: () => false } };
+  assert.equal(manager.watchWindowContent(h.win, {
+    shouldPoke: () => active, getIntent: () => generation,
+    isIntentCurrent: n => active && n === generation,
+    setTimeout: fn => (timers.push(fn), timers.length), clearTimeout() {},
+    poke: () => pokes.push("child"),
+  }), true);
+  const observer = h.observers[0];
+  observer.callback([{ type: "childList", target: content, addedNodes: [item] }]);
+  assert.equal(timers.length, 1);
+  timers.shift()();
+  assert.deepEqual(pokes, ["child"]);
+  const translation = { nodeType: 1, parentNode: item, className: "immersive-translate-target-wrapper", classList: { contains: () => false } };
+  observer.callback([{ type: "childList", target: item, addedNodes: [translation] }]);
+  assert.equal(timers.length, 0);
+  observer.callback([{ type: "characterData", target: { nodeType: 3, parentNode: item, nodeValue: "New option" } }]);
+  assert.equal(timers.length, 1);
+  active = false; generation++;
+  timers.shift()();
+  assert.deepEqual(pokes, ["child"]);
+  manager.unwatchWindowContent(h.win);
+  assert.equal(observer.disconnected, true);
+});
+
 function createWindowHarness() {
   const observers = [];
   const listeners = Object.create(null);
@@ -271,7 +304,13 @@ test("watchHostSurfaces pokes added settings and market nodes", () => {
   }), false);
   assert.equal(harness.observations.length, 1);
   assert.equal(harness.observations[0].target, harness.body);
-  assert.deepEqual(harness.observations[0].options, { childList: true, subtree: true });
+  assert.deepEqual(harness.observations[0].options, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["class", "aria-selected", "aria-current", "data-active", "data-state"],
+  });
 
   harness.observers[0].callback([{
     addedNodes: [createElement(["mod-settings"], harness.body)],

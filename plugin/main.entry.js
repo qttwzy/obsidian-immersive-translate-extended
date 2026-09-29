@@ -51,6 +51,11 @@ var IMTExtendedPlugin = (function () {
   var OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE = userscriptCompat.OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE;
   var OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE = userscriptCompat.OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE;
   var patchUserscriptHostContentBridge = userscriptCompat.patchUserscriptHostContentBridge;
+  var patchUserscriptHostLifecycleGuard = userscriptCompat.patchUserscriptHostLifecycleGuard;
+  var patchUserscriptHostRegionBridge = userscriptCompat.patchUserscriptHostRegionBridge;
+  var OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE = userscriptCompat.OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE;
+  var HOST_TRANSLATION_POLICY_KEY = "__imtHostTranslationPolicy";
+  var hostUiRegions = require("./host-ui-regions");
   var patchUserscriptSidePanelMinWidth = userscriptCompat.patchUserscriptSidePanelMinWidth;
   var DEFAULT_MOCK_SIDE_PANEL_WIDTH = userscriptCompat.DEFAULT_MOCK_SIDE_PANEL_WIDTH;
   var OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH = userscriptCompat.OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH;
@@ -106,7 +111,7 @@ var IMTExtendedPlugin = (function () {
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
   var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
   var UI_TRANSLATE_SELECTORS = [
-    ".titlebar", ".status-bar", ".workspace-ribbon", ".workspace-tab-header-container",
+    ".status-bar", ".workspace-ribbon", ".workspace-tab-header-container",
     ".workspace-sidedock-vault-profile", ".nav-header", ".nav-files-container",
     ".search-results-container", ".backlink-pane", ".outgoing-link-pane", ".tag-container",
     ".bookmarks-container", ".menu",
@@ -119,7 +124,7 @@ var IMTExtendedPlugin = (function () {
   var UI_DIALOG_EXCLUSION_SELECTORS = [".modal", "[role=dialog]", '[role="dialog"]'];
   var PROTECTED_EDITOR_SELECTORS = [".markdown-source-view", ".cm-editor"];
   var ARTICLE_TRANSLATE_SELECTOR = ".markdown-reading-view *";
-  var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view"].concat(
+  var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view", ".titlebar"].concat(
     UI_TRANSLATE_SELECTORS, UI_HOST_SURFACE_SELECTORS, PROTECTED_EDITOR_SELECTORS, [ARTICLE_TRANSLATE_SELECTOR]
   );
   var MINI_CONFIG_KEYS = ["interfaceLanguage", "targetLanguage", "translationService", "aiAssistantIds", "subtitleTranslateService", "inputTranslationService", "mouseHoverTranslationService", "protocolAgreeVersion", "isEnableGuideTips", "isEnableNotification", "forceAutoTranslate", "translationTheme", "translationMode", "translationThemePatterns", "selectTranslationFont", "enableWebViewInputTranslationDot"];
@@ -492,6 +497,7 @@ var IMTExtendedPlugin = (function () {
     this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
     this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
     this._translationIntentSequence = 0;
+    this._lastHostTranslationState = undefined;
     this._userscriptRequestSequence = 0;
     this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
     this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
@@ -2755,8 +2761,27 @@ var IMTExtendedPlugin = (function () {
     var _gmOpenInTab = function (url) { if (_isImtUrl(url)) { pluginInstance._openDashboardWindow(url); return; } if (pluginInstance._originalWindowOpen) pluginInstance._originalWindowOpen.call(window, url, "_blank"); };
     var gmVersion = this._loadedUserscriptVersion || "0.0.0";
     var gmInfo = { script: { version: gmVersion, name: "Immersive Translate", namespace: "https://immersivetranslate.com", _isUserscript: true }, platform: "obsidian" };
-    var gmGetValue = function (k, d) { try { var s = runtimeStorage.getItem(GM_STORE_PREFIX + k); return s !== null ? JSON.parse(s) : d; } catch (e) { return d; } };
-    var gmSetValue = function (k, v) { try { var key = String(k); var oldValue = gmGetValue(key); var nextValue = key === IMT_CONFIG_KEY ? pluginInstance._withHostScopeConfig(v) : v; runtimeStorage.setItem(GM_STORE_PREFIX + key, JSON.stringify(nextValue)); pluginInstance._emitUserscriptStorageChange(key, oldValue, nextValue, false); } catch (e) {} };
+    var readStoredValue = function (k, d) { try { var s = runtimeStorage.getItem(GM_STORE_PREFIX + k); return s !== null ? JSON.parse(s) : d; } catch (e) { return d; } };
+    var gmGetValue = function (k, d) {
+      var value = readStoredValue(k, d);
+      if (String(k) === IMT_CONFIG_KEY && runtimeWindow !== window && value && typeof value === "object" && !Array.isArray(value)) {
+        return pluginInstance._withRuntimeWindowConfig(value, runtimeWindow);
+      }
+      return value;
+    };
+    var gmSetValue = function (k, v) {
+      try {
+        var key = String(k), oldValue = readStoredValue(key);
+        var nextValue = key === IMT_CONFIG_KEY ? pluginInstance._withHostScopeConfig(v) : v;
+        if (key === IMT_CONFIG_KEY && runtimeWindow !== window) {
+          var previousRule = oldValue && oldValue.generalRule || {};
+          if (Object.prototype.hasOwnProperty.call(previousRule, "isTranslateTitle")) nextValue.generalRule.isTranslateTitle = previousRule.isTranslateTitle;
+          else delete nextValue.generalRule.isTranslateTitle;
+        }
+        runtimeStorage.setItem(GM_STORE_PREFIX + key, JSON.stringify(nextValue));
+        pluginInstance._emitUserscriptStorageChange(key, oldValue, nextValue, false);
+      } catch (e) {}
+    };
     var gmDeleteValue = function (k) { try { var oldValue = gmGetValue(k); runtimeStorage.removeItem(GM_STORE_PREFIX + k); pluginInstance._emitUserscriptStorageChange(String(k), oldValue, undefined, false); } catch (e) {} };
     var gmListValues = function () { var ks = []; for (var i = 0; i < runtimeStorage.length; i++) { var k = runtimeStorage.key(i); if (k && k.startsWith(GM_STORE_PREFIX)) ks.push(k.slice(GM_STORE_PREFIX.length)); } return ks; };
     var gmAddValueChangeListener = function (k, callback) {
@@ -3064,8 +3089,14 @@ var IMTExtendedPlugin = (function () {
     var runtimeWindow = targetWindow || window;
     var runtimeDocument = runtimeWindow.document || document;
     if (!this._isEngineLoaded(runtimeWindow)) return Promise.resolve(false);
-    if ((type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE) && !this._isHostBridgeReady(runtimeWindow)) {
+    if ((type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE || type === OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE) && !this._isHostBridgeReady(runtimeWindow)) {
       return Promise.resolve(false);
+    }
+    if (type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE && !this._isHostRegionBridgeReady(runtimeWindow)) return Promise.resolve(false);
+    if (runtimeWindow !== window && (type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE)) {
+      var policy = this._updateHostWindowTranslationPolicy(runtimeWindow, this._getActiveTranslationState(window));
+      if (!policy.active || runtimeWindow.closed) return Promise.resolve(false);
+      if (!data || data.__imtHostGeneration === undefined) data = Object.assign({}, data, { __imtHostGeneration: policy.generation });
     }
     var requestId = "obsidian-runtime-" + Date.now() + "-" + (++this._userscriptRequestSequence);
     var RuntimeCustomEvent = runtimeWindow.CustomEvent || CustomEvent;
@@ -3162,6 +3193,7 @@ var IMTExtendedPlugin = (function () {
         // Main window is authoritative: only continue while it is active.
         var followMode = isActiveTranslationState(liveMainState) ? liveMainState : "";
         if (followMode && change.modeChanged && isActiveTranslationState(desiredState)) followMode = desiredState;
+        pluginInstance._updateHostWindowTranslationPolicy(runtimeWindow, followMode);
         if (!pluginInstance.settings.uiTranslateEnabled || !isActiveTranslationState(followMode)) {
           try {
             if (typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
@@ -3171,19 +3203,7 @@ var IMTExtendedPlugin = (function () {
           return synced;
         }
         if (translationInputsChanged) {
-          return pluginInstance._applyUserscriptTranslationInputChange(config, change, followMode, runtimeSequence, runtimeWindow, intentSequence).then(function (applied) {
-            if (!applied || !change.modeChanged || !desiredState || desiredState === sourceState) return applied;
-            if (intentSequence !== undefined && !pluginInstance._isActiveTranslationIntent(intentSequence)) return false;
-            var switched = pluginInstance._dispatchUserscriptTranslationMode(desiredState, runtimeWindow);
-            if (!switched && typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
-              try {
-                var switchResult = runtimeWindow.immersiveTranslateSwitchTranslateState(desiredState);
-                Promise.resolve(switchResult).catch(function () {});
-                switched = true;
-              } catch (e) {}
-            }
-            return switched;
-          });
+          return pluginInstance._applyUserscriptTranslationInputChange(config, change, followMode, runtimeSequence, runtimeWindow, intentSequence);
         }
         if (change.modeChanged || (runtimeContext.retranslate && change.effect === "retranslate")) {
           return pluginInstance._pokeHostSurfaceTranslation(runtimeWindow, followMode);
@@ -3453,6 +3473,12 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._isHostBridgeReady = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
+    if (runtimeWindow !== window) {
+      try {
+        var engine = runtimeWindow[_engineStateKey];
+        if (engine && engine.loaded && engine.hostLifecycleGuardReady !== true) return false;
+      } catch (e) { return false; }
+    }
     var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
     if (record && record.hostBridgeReady === true) return true;
     if (record && record.hostBridgeReady === false) return false;
@@ -3474,11 +3500,14 @@ var IMTExtendedPlugin = (function () {
   IMTExtendedPluginClass.prototype._syncHostWindowTranslationState = function () {
     var pluginInstance = this;
     var sourceState = this._getActiveTranslationState(window);
+    if (sourceState === this._lastHostTranslationState) return false;
+    this._lastHostTranslationState = sourceState;
     if (!isActiveTranslationState(sourceState) && !this._configRestoreDepth) this._bumpTranslationIntentSequence();
     if (!this._hostWindowRuntimeManager) return false;
     var touched = false;
     this._hostWindowRuntimeManager.forEachActive(function (runtimeWindow) {
       touched = true;
+      pluginInstance._updateHostWindowTranslationPolicy(runtimeWindow, sourceState);
       if (isActiveTranslationState(sourceState)) {
         pluginInstance._pokeHostSurfaceTranslation(runtimeWindow);
         return;
@@ -3494,7 +3523,137 @@ var IMTExtendedPlugin = (function () {
     return touched;
   };
 
-  IMTExtendedPluginClass.prototype._pokeHostSurfaceTranslation = function (targetWindow, desiredMode) {
+  IMTExtendedPluginClass.prototype._isHostRegionBridgeReady = function (runtimeWindow) {
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow || window);
+    if (record && record.hostRegionBridgeReady === true) return true;
+    if (record && record.hostRegionBridgeReady === false) return false;
+    try {
+      var state = (runtimeWindow || window)[_engineStateKey];
+      return !!(state && state.hostRegionBridgeReady === true);
+    } catch (e) { return false; }
+  };
+
+  IMTExtendedPluginClass.prototype._updateHostWindowTranslationPolicy = function (runtimeWindow, mode) {
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    var policy = record.translationPolicy;
+    if (!policy) {
+      policy = record.translationPolicy = { active: false, generation: 0, mode: "", sourceIntent: -1 };
+      this._patchGlobal(runtimeWindow, HOST_TRANSLATION_POLICY_KEY, policy);
+    }
+    var active = !this._isUnloaded && this.settings.uiTranslateEnabled && isActiveTranslationState(mode);
+    if (policy.active !== active || policy.mode !== mode || policy.sourceIntent !== this._translationIntentSequence) {
+      policy.generation++;
+      policy.active = active;
+      policy.mode = mode;
+      policy.sourceIntent = this._translationIntentSequence;
+    }
+    if (!active) { record.translationQueued = false; record.translationQueuedFull = false; record.translationRegions = []; }
+    return policy;
+  };
+
+  IMTExtendedPluginClass.prototype._watchHostWindowContent = function (runtimeWindow) {
+    var manager = this._hostWindowRuntimeManager;
+    if (!manager || typeof manager.watchWindowContent !== "function") return;
+    var pluginInstance = this;
+    manager.watchWindowContent(runtimeWindow, {
+      onStateChange: function () {
+        var source = pluginInstance._getActiveTranslationState(window);
+        if (pluginInstance.settings.uiTranslateEnabled && isActiveTranslationState(source)) {
+          pluginInstance._flushHostWindowContent(runtimeWindow);
+          return;
+        }
+        pluginInstance._updateHostWindowTranslationPolicy(runtimeWindow, "");
+        if (isActiveTranslationState(pluginInstance._getActiveTranslationState(runtimeWindow)) && typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
+          runtimeWindow.immersiveTranslateSwitchTranslateState("original");
+        }
+      },
+      shouldPoke: function () { return !pluginInstance._isUnloaded && pluginInstance.settings.uiTranslateEnabled && isActiveTranslationState(pluginInstance._getActiveTranslationState(window)); },
+      getIntent: function () { return pluginInstance._translationIntentSequence; },
+      isIntentCurrent: function (intent) { return pluginInstance._isActiveTranslationIntent(intent); },
+      poke: function (regions) { pluginInstance._pokeHostSurfaceTranslation(runtimeWindow, undefined, regions); },
+    });
+  };
+
+  IMTExtendedPluginClass.prototype._flushHostWindowContent = function (runtimeWindow) {
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (!record || record.translationRequest || !record.translationQueued) return;
+    var regions = record.translationQueuedFull ? undefined : record.translationRegions;
+    record.translationQueued = false;
+    record.translationQueuedFull = false;
+    record.translationRegions = [];
+    this._pokeHostSurfaceTranslation(runtimeWindow, undefined, regions);
+  };
+
+  IMTExtendedPluginClass.prototype._prepareHostWindowRuntime = function (runtimeWindow, record) {
+    if (record.hostReadyRequest || record.hostReadyFailed) return;
+    record.hostReadyRequest = true;
+    var pluginInstance = this;
+    var attempt = function (count) {
+      Promise.resolve().then(function () {
+        if (pluginInstance._isUnloaded || runtimeWindow.closed || record.closed || pluginInstance._windowRuntimeLedger.recordFor(runtimeWindow) !== record) return false;
+        return pluginInstance._requestUserscriptDocumentMessage("getMiniConfigAsync", {}, runtimeWindow);
+      }).catch(function () { return false; }).then(function (ready) {
+        if (pluginInstance._isUnloaded || runtimeWindow.closed || record.closed || pluginInstance._windowRuntimeLedger.recordFor(runtimeWindow) !== record) return;
+        if (ready) {
+          record.hostRequestReady = true;
+          record.hostReadyRequest = false;
+          pluginInstance._flushHostWindowContent(runtimeWindow);
+        } else if (count < 3) {
+          pluginInstance._scheduleTimeout(function () { attempt(count + 1); }, 100);
+        } else {
+          record.hostReadyRequest = false;
+          record.hostReadyFailed = true;
+          new obsidian.Notice("设置窗口翻译初始化未完成，请关闭后重新打开设置窗口。");
+        }
+      });
+    };
+    attempt(0);
+  };
+
+  IMTExtendedPluginClass.prototype._translateHostWindowContent = function (runtimeWindow, mode, config, regions) {
+    if (runtimeWindow.closed) return false;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    var policy = this._updateHostWindowTranslationPolicy(runtimeWindow, mode);
+    if (!policy.active) return false;
+    var partial = Array.isArray(regions);
+    var changed = partial ? hostUiRegions.normalizeHostRegions(regions) : [];
+    if (partial && (!changed.length || !this._isHostRegionBridgeReady(runtimeWindow))) return false;
+    function queue() {
+      record.translationQueued = true;
+      if (!partial) record.translationQueuedFull = true;
+      else record.translationRegions = hostUiRegions.normalizeHostRegions((record.translationRegions || []).concat(changed));
+    }
+    if (record.hostRequestReady === false) { queue(); this._prepareHostWindowRuntime(runtimeWindow, record); return true; }
+    if (record.translationRequest) { queue(); return true; }
+    if (partial && !isActiveTranslationState(this._getActiveTranslationState(runtimeWindow))) { queue(); return false; }
+    if (partial && record.translationQueuedFull) return this._translateHostWindowContent(runtimeWindow, mode, config);
+    if (partial) changed = hostUiRegions.normalizeHostRegions((record.translationRegions || []).concat(changed));
+    record.translationQueued = false;
+    record.translationQueuedFull = false;
+    record.translationRegions = [];
+    var pluginInstance = this;
+    var data = partial ? { regions: changed } : this._buildUserscriptPageTranslationData(config);
+    if (!partial) data.translationMode = mode;
+    data.__imtHostGeneration = policy.generation;
+    var request = {};
+    record.translationRequest = request;
+    var type = partial ? OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE : OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE;
+    Promise.resolve(this._requestUserscriptDocumentMessage(type, data, runtimeWindow)).catch(function () { return false; }).then(function (ok) {
+      if (record.translationRequest !== request) return;
+      record.translationRequest = null;
+      if (pluginInstance._isUnloaded || runtimeWindow.closed || record.closed || pluginInstance._windowRuntimeLedger.recordFor(runtimeWindow) !== record) return;
+      if (!ok && partial) {
+        var hasNewWork = record.translationQueued;
+        if (policy.active && data.__imtHostGeneration === policy.generation) queue();
+        if (hasNewWork) pluginInstance._flushHostWindowContent(runtimeWindow);
+        return;
+      }
+      pluginInstance._flushHostWindowContent(runtimeWindow);
+    });
+    return true;
+  };
+
+  IMTExtendedPluginClass.prototype._pokeHostSurfaceTranslation = function (targetWindow, desiredMode, regions) {
     var runtimeWindow = targetWindow || window;
     if (this._isUnloaded || !this.settings.uiTranslateEnabled || !this._isEngineLoaded(runtimeWindow)) return false;
     if (!this._isHostBridgeReady(runtimeWindow)) return false;
@@ -3503,6 +3662,7 @@ var IMTExtendedPlugin = (function () {
     var intentSequence = this._translationIntentSequence;
     var sourceState = isActiveTranslationState(desiredMode) ? desiredMode :
       (runtimeWindow === window ? this._getActiveTranslationState(runtimeWindow) : this._getActiveTranslationState(window));
+    if (runtimeWindow !== window) this._updateHostWindowTranslationPolicy(runtimeWindow, sourceState);
     if (runtimeWindow !== window && !isActiveTranslationState(sourceState)) {
       try {
         if (typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
@@ -3511,6 +3671,7 @@ var IMTExtendedPlugin = (function () {
       } catch (e) {}
       return true;
     }
+    if (runtimeWindow !== window || Array.isArray(regions)) return this._translateHostWindowContent(runtimeWindow, sourceState, config, regions);
     // Passive UI pokes only continue an already-active translation. An explicit
     // desired mode (config retranslate / mode change) may start one.
     if (this._isPassiveTranslationMode(desiredMode) && !isActiveTranslationState(sourceState)) {
@@ -3551,9 +3712,15 @@ var IMTExtendedPlugin = (function () {
     if (!this._hostWindowRuntimeManager) return false;
     if (!this.settings.uiTranslateEnabled) {
       this._hostWindowRuntimeManager.unwatchHostSurfaces();
+      var plugin = this;
+      this._hostWindowRuntimeManager.forEachActive(function (win) {
+        plugin._updateHostWindowTranslationPolicy(win, "");
+        if (plugin._hostWindowRuntimeManager.unwatchWindowContent) plugin._hostWindowRuntimeManager.unwatchWindowContent(win);
+      });
       return false;
     }
     var pluginInstance = this;
+    this._hostWindowRuntimeManager.forEachActive(function (win) { pluginInstance._watchHostWindowContent(win); });
     return this._hostWindowRuntimeManager.watchHostSurfaces({
       document: document,
       getIntent: function () { return pluginInstance._translationIntentSequence; },
@@ -3562,7 +3729,7 @@ var IMTExtendedPlugin = (function () {
         if (pluginInstance._isUnloaded || !pluginInstance.settings.uiTranslateEnabled) return false;
         return isActiveTranslationState(pluginInstance._getActiveTranslationState(window));
       },
-      poke: function () { pluginInstance._pokeHostSurfaceTranslation(); },
+      poke: function (regions) { pluginInstance._pokeHostSurfaceTranslation(undefined, undefined, regions); },
     });
   };
 
@@ -3613,8 +3780,13 @@ var IMTExtendedPlugin = (function () {
     } else {
       record.hostBridgeReady = this._hostWindowUserscriptBridgeReady;
     }
+    if (options && options.hostRegionBridgeReady !== undefined && options.hostRegionBridgeReady !== null) {
+      record.hostRegionBridgeReady = !!options.hostRegionBridgeReady;
+    } else {
+      record.hostRegionBridgeReady = this._hostWindowRegionBridgeReady === true;
+    }
     if (this._loadedUserscriptVersion) record.userscriptVersion = this._loadedUserscriptVersion;
-    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion, hostBridgeReady: record.hostBridgeReady }; } catch (e) {}
+    try { runtimeWindow[_engineStateKey] = { loaded: true, mode: "userscript", loadedAt: Date.now(), userscriptVersion: this._loadedUserscriptVersion, hostBridgeReady: record.hostBridgeReady, hostLifecycleGuardReady: runtimeWindow !== window && this._hostWindowUserscriptBridgeReady === true, hostRegionBridgeReady: record.hostRegionBridgeReady }; } catch (e) {}
   };
 
   IMTExtendedPluginClass.prototype._setUserscriptRuntimeVersion = function (content) {
@@ -3626,14 +3798,77 @@ var IMTExtendedPlugin = (function () {
     return version;
   };
 
+  IMTExtendedPluginClass.prototype._withRuntimeWindowConfig = function (storedConfig, runtimeWindow) {
+    var userscriptConfig = this._withHostScopeConfig(storedConfig);
+    var sel = userscriptConfig.generalRule || {};
+    sel = Object.assign({}, sel, {
+      isTranslateTitle: false,
+      selectors: (sel.selectors || []).filter(function (selector) { return selector !== ".titlebar"; }),
+      excludeSelectors: Array.from(new Set((sel.excludeSelectors || []).concat([".titlebar"]))),
+    });
+    userscriptConfig = Object.assign({}, userscriptConfig, { generalRule: sel });
+    return userscriptConfig;
+  };
+
+  IMTExtendedPluginClass.prototype._restoreNativeHostTitle = function (runtimeWindow) {
+    try {
+      var runtimeDocument = (runtimeWindow || window).document;
+      var originalTitle = runtimeDocument && runtimeDocument.originTitle;
+      if (typeof originalTitle === "string" && originalTitle && typeof runtimeDocument.title === "string" && runtimeDocument.title !== originalTitle) {
+        runtimeDocument.title = originalTitle;
+      }
+    } catch (e) {}
+  };
+
+  IMTExtendedPluginClass.prototype._installNativeHostTitleGuard = function (runtimeWindow) {
+    if (!runtimeWindow || runtimeWindow === window) return;
+    var record = this._windowRuntimeRecord(runtimeWindow);
+    if (!record || record.nativeTitleObserver) return;
+    var runtimeDocument;
+    try { runtimeDocument = runtimeWindow.document; } catch (e) { return; }
+    if (!runtimeDocument || !runtimeDocument.head) return;
+    var MutationObserverClass;
+    try { MutationObserverClass = runtimeWindow.MutationObserver || MutationObserver; } catch (e) { MutationObserverClass = null; }
+    if (typeof MutationObserverClass !== "function") return;
+    var pluginInstance = this;
+    var observer = new MutationObserverClass(function () {
+      if (record.nativeTitleRestoreQueued) return;
+      record.nativeTitleRestoreQueued = true;
+      Promise.resolve().then(function () {
+        record.nativeTitleRestoreQueued = false;
+        if (record.closed || pluginInstance._isUnloaded || pluginInstance._windowRuntimeLedger.recordFor(runtimeWindow) !== record) return;
+        var originalTitle = record.nativeTitle || runtimeDocument.originTitle;
+        if (typeof originalTitle !== "string" || !originalTitle) return;
+        if (runtimeDocument.title !== originalTitle) runtimeDocument.title = originalTitle;
+      });
+    });
+    try {
+      observer.observe(runtimeDocument.head, { childList: true, subtree: true, characterData: true });
+      record.nativeTitleObserver = observer;
+      this._restoreNativeHostTitle(runtimeWindow);
+    } catch (e) {}
+  };
+
+  IMTExtendedPluginClass.prototype._removeNativeHostTitleGuard = function (runtimeWindow) {
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (!record) return;
+    if (record.nativeTitleObserver && typeof record.nativeTitleObserver.disconnect === "function") {
+      try { record.nativeTitleObserver.disconnect(); } catch (e) {}
+    }
+    record.nativeTitleObserver = null;
+    record.nativeTitleRestoreQueued = false;
+  };
+
   IMTExtendedPluginClass.prototype._applyRuntimeConfig = function (targetWindow) {
     var runtimeWindow = targetWindow || window;
-    var storedConfig = _gmGetConfig();
-    var userscriptConfig = this._withHostScopeConfig(storedConfig);
-    var targetLanguage = _normalizeTargetLanguage(userscriptConfig.targetLanguage) || _normalizeTargetLanguage(userscriptConfig.translationTargetLanguage) || DEFAULT_TARGET_LANGUAGE;
+    this._restoreNativeHostTitle(runtimeWindow);
+    var userscriptConfig = this._withRuntimeWindowConfig(_gmGetConfig(), runtimeWindow);
     var sel = userscriptConfig.generalRule || {};
+    var targetLanguage = _normalizeTargetLanguage(userscriptConfig.targetLanguage) || _normalizeTargetLanguage(userscriptConfig.translationTargetLanguage) || DEFAULT_TARGET_LANGUAGE;
     userscriptConfig = Object.assign({}, userscriptConfig, { targetLanguage: targetLanguage });
-    this._patchGlobal(runtimeWindow, "immersiveTranslateConfig", { partnerId: "immersive-translate-sdk", translationTargetLanguage: targetLanguage, pageRule: { selectors: sel.selectors, excludeSelectors: sel.excludeSelectors } });
+    var pageRule = { selectors: sel.selectors, excludeSelectors: sel.excludeSelectors };
+    pageRule.isTranslateTitle = false;
+    this._patchGlobal(runtimeWindow, "immersiveTranslateConfig", { partnerId: "immersive-translate-sdk", translationTargetLanguage: targetLanguage, pageRule: pageRule });
     this._patchGlobal(runtimeWindow, "IMMERSIVE_TRANSLATE_CONFIG", userscriptConfig);
     if (!targetWindow && this._hostWindowRuntimeManager) {
       var pluginInstance = this;
@@ -3651,18 +3886,27 @@ var IMTExtendedPlugin = (function () {
     var alreadyLoaded = this._isEngineLoaded(runtimeWindow);
     if (!alreadyLoaded && !this._hostWindowUserscriptSource) return false;
     try {
+      var record = this._windowRuntimeRecord(runtimeWindow);
+      if (!record.nativeTitle) {
+        record.nativeTitle = typeof runtimeDocument.originTitle === "string" && runtimeDocument.originTitle ? runtimeDocument.originTitle : String(runtimeDocument.title || "");
+        if (record.nativeTitle && !runtimeDocument.originTitle) runtimeDocument.originTitle = record.nativeTitle;
+      }
+      this._updateHostWindowTranslationPolicy(runtimeWindow, this._getActiveTranslationState(window));
       this._applyRuntimeConfig(runtimeWindow);
       this._installGMPolyfill(runtimeWindow);
       this._installBrowserAPIPolyfill(runtimeWindow);
       this._installGMFetchPolyfill(runtimeWindow);
       if (!alreadyLoaded) {
+        this._windowRuntimeRecord(runtimeWindow).hostRequestReady = false;
         var script = runtimeDocument.createElement("script");
         script.textContent = this._hostWindowUserscriptSource;
         script._imtHostRuntimeWindow = runtimeWindow;
         this._externalScripts.push(script);
         runtimeDocument.body.append(script);
-        this._markEngineLoaded(runtimeWindow, { hostBridgeReady: this._hostWindowUserscriptBridgeReady });
+        this._markEngineLoaded(runtimeWindow, { hostBridgeReady: this._hostWindowUserscriptBridgeReady, hostRegionBridgeReady: this._hostWindowRegionBridgeReady });
       }
+      this._installNativeHostTitleGuard(runtimeWindow);
+      this._watchHostWindowContent(runtimeWindow);
       this._pokeHostSurfaceTranslation(runtimeWindow);
       return true;
     } catch (e) {
@@ -3673,6 +3917,10 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._deactivateHostWindowRuntime = function (runtimeWindow) {
     if (!runtimeWindow) return;
+    this._removeNativeHostTitleGuard(runtimeWindow);
+    var record = this._windowRuntimeLedger.recordFor(runtimeWindow);
+    if (record && record.translationPolicy) { record.translationPolicy.active = false; record.translationPolicy.generation++; record.translationQueued = false; }
+    if (this._hostWindowRuntimeManager && this._hostWindowRuntimeManager.unwatchWindowContent) this._hostWindowRuntimeManager.unwatchWindowContent(runtimeWindow);
     var removeOwnedNodes = function (nodes) {
       var retained = [];
       for (var i = 0; i < nodes.length; i++) {
@@ -3751,11 +3999,23 @@ var IMTExtendedPlugin = (function () {
     var hostBridgePatch = patchUserscriptHostContentBridge(scriptContent);
     scriptContent = hostBridgePatch.source;
     var hostBridgeReady = hostBridgePatch.changed || hostBridgePatch.reason === "already-patched";
+    var lifecyclePatch = patchUserscriptHostLifecycleGuard(scriptContent);
+    scriptContent = lifecyclePatch.source;
+    var lifecycleReady = lifecyclePatch.changed || lifecyclePatch.reason === "already-patched";
+    var regionPatch = patchUserscriptHostRegionBridge(scriptContent);
+    scriptContent = regionPatch.source;
+    this._hostWindowRegionBridgeReady = regionPatch.changed || regionPatch.reason === "already-patched";
+    if (hostBridgeReady && !this._hostWindowRegionBridgeReady && this.settings.uiTranslateEnabled) {
+      new obsidian.Notice("当前运行时不支持设置窗口的增量补译，请更新运行时并重新打开设置窗口。");
+    }
+    if (hostBridgeReady && !lifecycleReady && this.settings.uiTranslateEnabled) {
+      new obsidian.Notice("当前运行时暂不支持设置窗口的安全自动翻译，请更新运行时并重新打开设置窗口。");
+    }
     if (!hostBridgeReady) {
       console.warn("[IMT-Extended] Userscript host-content compatibility patch skipped: " + hostBridgePatch.reason);
       new obsidian.Notice("当前沉浸式翻译运行时暂不支持 Dashboard 热同步；语言和翻译服务请在悬浮球中确认。");
     }
-    this._hostWindowUserscriptBridgeReady = hostBridgeReady;
+    this._hostWindowUserscriptBridgeReady = hostBridgeReady && lifecycleReady;
     if (!this._isEngineLoaded()) {
       this._hostBridgeReady = hostBridgeReady;
       this._setUserscriptRuntimeVersion(scriptContent);
@@ -3766,7 +4026,7 @@ var IMTExtendedPlugin = (function () {
       return true;
     }
     if (this._appendEngineScript(scriptContent, generation)) {
-      this._markEngineLoaded(window, { hostBridgeReady: hostBridgeReady });
+      this._markEngineLoaded(window, { hostBridgeReady: hostBridgeReady, hostRegionBridgeReady: this._hostWindowRegionBridgeReady });
       if (this._hostWindowRuntimeManager) this._hostWindowRuntimeManager.refresh();
       return true;
     }

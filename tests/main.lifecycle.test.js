@@ -2529,7 +2529,7 @@ test("host surface poke targets the independent popout document and mirrors the 
   plugin._scheduleTimeout = (callback) => { callback(); return 1; };
 
   assert.equal(plugin._pokeHostSurfaceTranslation(childWindow), true);
-  assert.deepEqual(modes, [{ mode: "dual", runtimeWindow: childWindow }]);
+  assert.deepEqual(modes, []);
   assert.deepEqual(messages, [{ type: "obsidianHostTranslatePage", runtimeWindow: childWindow }]);
 });
 
@@ -2794,7 +2794,7 @@ test("runtime config is mirrored into every active host popout", () => {
   assert.equal(childWindow.IMMERSIVE_TRANSLATE_CONFIG.targetLanguage, "ja");
   assert.deepEqual(
     childWindow.IMMERSIVE_TRANSLATE_CONFIG.generalRule.selectors,
-    window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.selectors,
+    window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.selectors.filter(selector => selector !== ".titlebar"),
   );
 });
 
@@ -2836,6 +2836,7 @@ test("interface translation toggle starts and stops host-surface watching", asyn
   plugin._refreshUserscriptRuntime = () => true;
   plugin._pushConfigToDashboard = () => {};
   plugin._hostWindowRuntimeManager = {
+    forEachActive() {},
     watchHostSurfaces() { surfaces.push("watch"); return true; },
     unwatchHostSurfaces() { surfaces.push("unwatch"); return true; },
   };
@@ -3203,7 +3204,8 @@ test("runtime refresh propagates language, service, and mode changes to an open 
   assert.equal(translated.data.targetLanguage, "ja");
   assert.equal(translated.data.translationService, "microsoft");
   assert.equal(translated.data.translationMode, "translation");
-  assert.ok(modeChanges.some((change) => change.mode === "translation" && change.runtimeWindow === childWindow));
+  assert.equal(modeChanges.some((change) => change.runtimeWindow === childWindow), false);
+  assert.equal(translated.data.translationMode, "translation");
 });
 
 test("rapid runtime refreshes serialize userscript writes and apply only the latest visible translation", async () => {
@@ -4827,4 +4829,248 @@ test("rapid standalone conflict toggles converge on the final desired state", as
   disableResolvers[1]();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(enabledPlugins.has("immersive-translate"), false);
+});
+
+test("child refresh sends one guarded request and stopping invalidates an in-flight request", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  let state = "dual";
+  const child = { document: {}, immersiveTranslateSwitchTranslateState() {} };
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._getActiveTranslationState = win => win === child ? "original" : state;
+  plugin._hostWindowRuntimeManager = { forEachActive(fn) { fn(child); } };
+  const requests = [];
+  let finish;
+  plugin._requestUserscriptDocumentMessage = (type, data) => {
+    requests.push({ type, data });
+    return new Promise(resolve => { finish = resolve; });
+  };
+  plugin._dispatchUserscriptTranslationMode = () => assert.fail("child startup must not dispatch a second translation");
+  assert.equal(plugin._pokeHostSurfaceTranslation(child), true);
+  const policy = child.__imtHostTranslationPolicy;
+  assert.equal(requests.length, 1);
+  const generation = requests[0].data.__imtHostGeneration;
+  plugin._pokeHostSurfaceTranslation(child);
+  assert.equal(requests.length, 1);
+  state = "original";
+  plugin._syncHostWindowTranslationState();
+  assert.equal(policy.active, false);
+  assert.notEqual(policy.generation, generation);
+  finish(true);
+  await tick();
+  assert.equal(requests.length, 1);
+});
+
+test("repeated same-value main state notifications do not retranslate the child", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const child = {};
+  plugin._getActiveTranslationState = () => "dual";
+  plugin._hostWindowRuntimeManager = { forEachActive(fn) { fn(child); } };
+  let pokes = 0;
+  plugin._pokeHostSurfaceTranslation = () => { pokes++; };
+  plugin._syncHostWindowTranslationState();
+  plugin._syncHostWindowTranslationState();
+  assert.equal(pokes, 1);
+});
+
+test("native child title translation is disabled and stored rules remain unchanged", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ generalRule: { isTranslateTitle: true } }));
+  const original = localStorage.getItem("imt-gm-fullLocalUserConfig");
+  const child = {};
+  plugin._applyRuntimeConfig(child);
+  assert.equal(child.immersiveTranslateConfig.pageRule.isTranslateTitle, false);
+  assert.equal(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.isTranslateTitle, false);
+  assert.ok(child.immersiveTranslateConfig.pageRule.excludeSelectors.includes(".titlebar"));
+  assert.equal(child.immersiveTranslateConfig.pageRule.selectors.includes(".titlebar"), false);
+  plugin._applyRuntimeConfig();
+  assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.isTranslateTitle, false);
+  assert.equal(localStorage.getItem("imt-gm-fullLocalUserConfig"), original);
+});
+
+test("native child title guard restores an existing translated title after a later userscript write", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const head = makeElement("head");
+  const childDocument = { head, title: "Settings - ResearchBase", originTitle: "Settings - ResearchBase" };
+  let notify;
+  class FakeMutationObserver {
+    constructor(callback) { notify = callback; }
+    observe() {}
+    disconnect() {}
+  }
+  const child = { document: childDocument, MutationObserver: FakeMutationObserver };
+
+  plugin._installNativeHostTitleGuard(child);
+  childDocument.title = "设置 - ResearchBase --- Settings - ResearchBase";
+  notify();
+  await tick();
+
+  assert.equal(childDocument.title, childDocument.originTitle);
+  plugin._removeNativeHostTitleGuard(child);
+});
+
+test("main window title translation is disabled and an existing translated title is restored", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ generalRule: { isTranslateTitle: true } }));
+  document.originTitle = "设置 - ResearchBase - Obsidian";
+  document.title = "Settings - ResearchBase - Obsidian --- 设置 - ResearchBase - Obsidian";
+
+  plugin._applyRuntimeConfig();
+
+  assert.equal(document.title, document.originTitle);
+  assert.equal(window.immersiveTranslateConfig.pageRule.isTranslateTitle, false);
+  assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.isTranslateTitle, false);
+  assert.equal(window.immersiveTranslateConfig.pageRule.selectors.includes(".titlebar"), false);
+  assert.ok(window.immersiveTranslateConfig.pageRule.excludeSelectors.includes(".titlebar"));
+});
+
+test("changed child regions use incremental requests and never start full translation as fallback", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._isHostRegionBridgeReady = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  const child = {};
+  const sent = [];
+  let settle;
+  plugin._requestUserscriptDocumentMessage = (type, data) => {
+    sent.push({ type, data });
+    return new Promise(resolve => { settle = resolve; });
+  };
+  plugin._pokeHostSurfaceTranslation(child, undefined, ["settings-content"]);
+  plugin._pokeHostSurfaceTranslation(child, undefined, ["settings-content", "settings-heading"]);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "obsidianHostTranslateRegions");
+  assert.deepEqual(sent[0].data.regions, ["settings-content"]);
+  settle(true);
+  await tick();
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1].data.regions, ["settings-content", "settings-heading"]);
+  settle(false);
+  await tick();
+  assert.equal(sent.length, 2, "a failed regional scan must not fall back to a page restart");
+});
+
+test("main window region changes use incremental requests", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._isHostRegionBridgeReady = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  const sent = [];
+  plugin._requestUserscriptDocumentMessage = (type, data, runtimeWindow) => {
+    sent.push({ type, data, runtimeWindow });
+    return Promise.resolve(true);
+  };
+
+  assert.equal(plugin._pokeHostSurfaceTranslation(undefined, undefined, ["settings-content"]), true);
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "obsidianHostTranslateRegions");
+  assert.deepEqual(sent[0].data.regions, ["settings-content"]);
+  assert.equal(sent[0].runtimeWindow, window);
+});
+
+test("a detached regional scan does not swallow the page queued while it was running", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._isHostRegionBridgeReady = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  const child = {};
+  const sent = [];
+  let settle;
+  plugin._requestUserscriptDocumentMessage = (type, data) => {
+    sent.push({ type, data });
+    return new Promise(resolve => { settle = resolve; });
+  };
+  plugin._pokeHostSurfaceTranslation(child, undefined, ["settings-content"]);
+  plugin._pokeHostSurfaceTranslation(child, undefined, ["settings-content", "settings-heading"]);
+  settle(false);
+  await tick();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].type, "obsidianHostTranslateRegions");
+  assert.deepEqual(sent[1].data.regions, ["settings-content", "settings-heading"]);
+  settle(false);
+  await tick();
+  assert.equal(sent.length, 2, "failure without a newer mutation waits rather than spinning");
+});
+
+test("a newly injected child waits for its dispatcher before sending the initial translation", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const child = {};
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._getActiveTranslationState = () => "dual";
+  const record = plugin._windowRuntimeRecord(child);
+  record.hostRequestReady = false;
+  const sent = [];
+  let ready;
+  plugin._requestUserscriptDocumentMessage = (type) => {
+    sent.push(type);
+    if (type === "getMiniConfigAsync") return new Promise(resolve => { ready = resolve; });
+    return Promise.resolve(true);
+  };
+  plugin._pokeHostSurfaceTranslation(child);
+  await tick();
+  assert.deepEqual(sent, ["getMiniConfigAsync"]);
+  ready(true);
+  await tick();
+  assert.deepEqual(sent, ["getMiniConfigAsync", "obsidianHostTranslatePage"]);
+});
+
+test("a failed old regional scan drains a fresh full startup queued after stop and reopen", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const child = { immersiveTranslateSwitchTranslateState() {} };
+  let state = "dual";
+  plugin._isEngineLoaded = () => true;
+  plugin._isHostBridgeReady = () => true;
+  plugin._isHostRegionBridgeReady = () => true;
+  plugin._getActiveTranslationState = win => win === child ? "dual" : state;
+  plugin._hostWindowRuntimeManager = { forEachActive(fn) { fn(child); } };
+  const sent = [];
+  let settle;
+  plugin._requestUserscriptDocumentMessage = (type, data) => {
+    sent.push({ type, generation: data.__imtHostGeneration });
+    return new Promise(resolve => { settle = resolve; });
+  };
+  plugin._pokeHostSurfaceTranslation(child, undefined, ["settings-content"]);
+  state = ""; plugin._syncHostWindowTranslationState();
+  state = "dual"; plugin._syncHostWindowTranslationState();
+  settle(false);
+  await tick();
+  assert.deepEqual(sent.map(x => x.type), ["obsidianHostTranslateRegions", "obsidianHostTranslatePage"]);
+  assert.notEqual(sent[0].generation, sent[1].generation);
+  settle(true);
+  await tick();
+});
+
+test("child GM reads protect native titles and writes preserve the user's stored title preference", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const child = { document, localStorage, navigator };
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ generalRule: { isTranslateTitle: true } }));
+  plugin._installGMPolyfill(child);
+  const effective = child.GM_getValue("fullLocalUserConfig");
+  assert.equal(effective.generalRule.isTranslateTitle, false);
+  assert.ok(effective.generalRule.excludeSelectors.includes(".titlebar"));
+  child.GM_setValue("fullLocalUserConfig", { ...effective, translationTheme: "mask" });
+  const saved = JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig"));
+  assert.equal(saved.generalRule.isTranslateTitle, true);
+  assert.equal(saved.translationTheme, "mask");
+  assert.equal(saved.generalRule.excludeSelectors.includes(".titlebar"), false);
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ generalRule: {} }));
+  child.GM_setValue("fullLocalUserConfig", child.GM_getValue("fullLocalUserConfig"));
+  assert.equal(Object.hasOwn(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")).generalRule, "isTranslateTitle"), false);
 });
