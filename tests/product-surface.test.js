@@ -61,6 +61,24 @@ test("runtime installation is user initiated from the official source", () => {
   assert.doesNotMatch(installer + contract, /createHash|sha256|node:crypto/);
 });
 
+test("the verified runtime version is pinned in the contract and installed from its own release", () => {
+  const entry = fs.readFileSync(path.join(ROOT, "plugin", "main.entry.js"), "utf8");
+  const installer = fs.readFileSync(path.join(ROOT, "plugin", "runtime-installer.js"), "utf8");
+  const contractSource = fs.readFileSync(path.join(ROOT, "plugin", "runtime-contract.js"), "utf8");
+  const contract = require("../plugin/runtime-contract");
+
+  assert.match(contractSource, /SUPPORTED_OFFICIAL_RUNTIME_VERSION\s*=\s*"\d/);
+  assert.equal(contract.isRuntimeVersion(contract.SUPPORTED_OFFICIAL_RUNTIME_VERSION), true);
+  assert.equal(
+    contract.officialRuntimeVersionUrl(contract.SUPPORTED_OFFICIAL_RUNTIME_VERSION),
+    "https://github.com/immersive-translate/immersive-translate/releases/download/v" + contract.SUPPORTED_OFFICIAL_RUNTIME_VERSION + "/immersive-translate.user.js",
+  );
+  assert.match(entry, /_installSupportedRuntime/);
+  assert.match(entry, /officialRuntimeVersionUrl/);
+  assert.match(entry, /compareRuntimeVersions/);
+  assert.match(installer, /expectedVersion/);
+});
+
 test("production logging does not interpolate account identity", () => {
   const entry = fs.readFileSync(path.join(ROOT, "plugin", "main.entry.js"), "utf8");
   const dashboardPreload = fs.readFileSync(path.join(ROOT, "plugin", "dashboard-preload.js"), "utf8");

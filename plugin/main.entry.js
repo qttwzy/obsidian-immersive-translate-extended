@@ -60,7 +60,11 @@ var IMTExtendedPlugin = (function () {
   var DEFAULT_MOCK_SIDE_PANEL_WIDTH = userscriptCompat.DEFAULT_MOCK_SIDE_PANEL_WIDTH;
   var OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH = userscriptCompat.OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH;
   var runtimeInstaller = require("./runtime-installer");
+  var runtimeContract = require("./runtime-contract");
   var OFFICIAL_RUNTIME_URL = runtimeInstaller.OFFICIAL_RUNTIME_URL;
+  var SUPPORTED_OFFICIAL_RUNTIME_VERSION = runtimeContract.SUPPORTED_OFFICIAL_RUNTIME_VERSION;
+  var compareRuntimeVersions = runtimeContract.compareRuntimeVersions;
+  var officialRuntimeVersionUrl = runtimeContract.officialRuntimeVersionUrl;
   var extractRuntimeVersion = runtimeInstaller.extractRuntimeVersion;
   var installRuntime = runtimeInstaller.installRuntime;
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
@@ -1679,6 +1683,7 @@ var IMTExtendedPlugin = (function () {
       installPhase: this._runtimeInstallPhase || "",
       installError: this._runtimeInstallError || "",
       restartRequired: false,
+      supportedVersion: SUPPORTED_OFFICIAL_RUNTIME_VERSION,
     };
     try {
       var runtime = this._installedRuntime;
@@ -1749,49 +1754,61 @@ var IMTExtendedPlugin = (function () {
     }
   };
 
-  IMTExtendedPluginClass.prototype._installRuntimeFromOfficialSource = async function () {
+  IMTExtendedPluginClass.prototype._installRuntimeFromUrl = async function (options) {
+    var url = options && typeof options.url === "string" ? options.url : "";
+    var expectedVersion = options && typeof options.expectedVersion === "string" ? options.expectedVersion : "";
+    // The official CDN script is the source of the "official current version" probe, so only
+    // this path waits for that probe, reuses its download and writes its result back. Any
+    // other source (the pinned verified-version release) stays independent of the probe.
+    var officialCurrentSource = !!(options && options.officialCurrentSource);
     if (this._runtimeInstallPromise) return this._runtimeInstallPromise;
-    if (this._isUnloaded) return { ok: false, version: "" };
+    if (this._isUnloaded || !url) return { ok: false, version: "" };
     var pluginInstance = this;
     var installGeneration = ++this._runtimeInstallGeneration;
     try { window[_runtimeInstallOwnerKey] = this; } catch (e) {}
+    var installIsStale = function () {
+      return pluginInstance._isUnloaded ||
+        pluginInstance._runtimeInstallGeneration !== installGeneration ||
+        window[_runtimeInstallOwnerKey] !== pluginInstance;
+    };
     var operation = (async function () {
       try {
-        pluginInstance._setRuntimeInstallPhase("checking");
-        if (pluginInstance._runtimeVersionCheckPromise) {
-          await pluginInstance._runtimeVersionCheckPromise;
-        }
-        if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
-          return { ok: false, version: "" };
+        if (officialCurrentSource) {
+          pluginInstance._setRuntimeInstallPhase("checking");
+          if (pluginInstance._runtimeVersionCheckPromise) {
+            await pluginInstance._runtimeVersionCheckPromise;
+          }
+          if (installIsStale()) return { ok: false, version: "" };
         }
         var sourceText = "";
         var cachedVersion = pluginInstance._latestRuntimeSourceVersion;
-        var cacheFresh = pluginInstance._latestRuntimeSource && cachedVersion &&
+        var cacheFresh = officialCurrentSource && pluginInstance._latestRuntimeSource && cachedVersion &&
           pluginInstance._runtimeVersionCheckState === "available" &&
           pluginInstance._runtimeVersionCheckedAt &&
           Date.now() - pluginInstance._runtimeVersionCheckedAt < RUNTIME_VERSION_CHECK_TTL_MS;
         if (cacheFresh) sourceText = pluginInstance._latestRuntimeSource;
         else {
           pluginInstance._setRuntimeInstallPhase("downloading");
-          var response = await obsidian.requestUrl({ url: OFFICIAL_RUNTIME_URL, method: "GET", throw: false });
-          if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
-            return { ok: false, version: "" };
-          }
+          var response = await obsidian.requestUrl({ url: url, method: "GET", throw: false });
+          if (installIsStale()) return { ok: false, version: "" };
           if (!response || response.status !== 200 || typeof response.text !== "string") {
-            pluginInstance._setRuntimeInstallPhase("", "官方地址未返回可用脚本");
-            new obsidian.Notice("翻译运行时安装失败：官方地址未返回可用脚本");
+            pluginInstance._setRuntimeInstallPhase("", "下载地址未返回可用脚本");
+            new obsidian.Notice("翻译运行时安装失败：下载地址未返回可用脚本");
             return { ok: false, version: "" };
           }
           sourceText = response.text;
         }
-        if (pluginInstance._isUnloaded || pluginInstance._runtimeInstallGeneration !== installGeneration || window[_runtimeInstallOwnerKey] !== pluginInstance) {
-          return { ok: false, version: "" };
-        }
+        if (installIsStale()) return { ok: false, version: "" };
         pluginInstance._setRuntimeInstallPhase("verifying");
         var version = extractRuntimeVersion(sourceText);
         if (!version) {
           pluginInstance._setRuntimeInstallPhase("", "脚本版本无效");
           new obsidian.Notice("翻译运行时安装失败：脚本版本无效");
+          return { ok: false, version: "" };
+        }
+        if (expectedVersion && version !== expectedVersion) {
+          pluginInstance._setRuntimeInstallPhase("", "脚本版本与已核验版本不一致");
+          new obsidian.Notice("翻译运行时安装失败：下载到的脚本版本 v" + version + " 与已核验版本 v" + expectedVersion + " 不一致");
           return { ok: false, version: "" };
         }
         var dir = pluginInstance._getPluginDir();
@@ -1802,13 +1819,15 @@ var IMTExtendedPlugin = (function () {
         }
         pluginInstance._setRuntimeInstallPhase("writing");
         var engineAlreadyLoaded = pluginInstance._isEngineLoaded();
-        var runtime = installRuntime({ pluginDir: dir, content: sourceText });
+        var runtime = installRuntime({ pluginDir: dir, content: sourceText, expectedVersion: expectedVersion, source: url });
         pluginInstance._installedRuntime = runtime;
-        pluginInstance._runtimeVersionCheckGeneration++;
-        pluginInstance._latestRuntimeVersion = runtime.version;
-        pluginInstance._rememberOfficialRuntimeSource(sourceText, runtime.version);
-        pluginInstance._runtimeVersionCheckState = "available";
-        pluginInstance._runtimeVersionCheckedAt = Date.now();
+        if (officialCurrentSource) {
+          pluginInstance._runtimeVersionCheckGeneration++;
+          pluginInstance._latestRuntimeVersion = runtime.version;
+          pluginInstance._rememberOfficialRuntimeSource(sourceText, runtime.version);
+          pluginInstance._runtimeVersionCheckState = "available";
+          pluginInstance._runtimeVersionCheckedAt = Date.now();
+        }
         if (engineAlreadyLoaded) {
           pluginInstance._setRuntimeInstallPhase("");
           new obsidian.Notice("翻译运行时 v" + runtime.version + " 已安装；重启 Obsidian 后生效");
@@ -1841,6 +1860,26 @@ var IMTExtendedPlugin = (function () {
       if (this._runtimeInstallPromise === operation) this._runtimeInstallPromise = null;
       if (this._runtimeInstallPhase) this._setRuntimeInstallPhase("");
     }
+  };
+
+  IMTExtendedPluginClass.prototype._installRuntimeFromOfficialSource = function () {
+    return this._installRuntimeFromUrl({ url: OFFICIAL_RUNTIME_URL, officialCurrentSource: true });
+  };
+
+  // The verified-version path deliberately downloads from its own pinned URL, does not
+  // await the in-flight official version probe and does not touch the probe generation or
+  // its cached result: a stuck or failing probe must not block this recovery path, and
+  // invalidating a running probe would leave the settings page stuck on "checking".
+  // Settings present this version to users as the verified adaptation version rather
+  // than a general compatibility promise for every official release.
+  IMTExtendedPluginClass.prototype._installSupportedRuntime = function () {
+    var supportedVersion = SUPPORTED_OFFICIAL_RUNTIME_VERSION;
+    var url = officialRuntimeVersionUrl(supportedVersion);
+    if (!url) {
+      new obsidian.Notice("翻译运行时安装失败：已核验版本号无效");
+      return Promise.resolve({ ok: false, version: "" });
+    }
+    return this._installRuntimeFromUrl({ url: url, expectedVersion: supportedVersion });
   };
 
   IMTExtendedPluginClass.prototype._ensureUserscript = async function (generation) {
@@ -4109,11 +4148,21 @@ var IMTExtendedPlugin = (function () {
     containerEl.createEl("h3", { text: "翻译运行时" });
     var runtimeStatus = self.plugin._getRuntimeStatus();
     var installing = !!runtimeStatus.installPhase;
+    var supportedVersion = typeof runtimeStatus.supportedVersion === "string" && runtimeStatus.supportedVersion
+      ? runtimeStatus.supportedVersion
+      : SUPPORTED_OFFICIAL_RUNTIME_VERSION;
+    var installedRelation = runtimeStatus.installed ? compareRuntimeVersions(runtimeStatus.version, supportedVersion) : null;
+    var latestRelation = runtimeStatus.latestVersion ? compareRuntimeVersions(runtimeStatus.latestVersion, supportedVersion) : null;
+    var installedIsCurrent = runtimeStatus.installed && !!runtimeStatus.latestVersion &&
+      compareRuntimeVersions(runtimeStatus.version, runtimeStatus.latestVersion) === 0;
     var runtimeDescription = runtimeStatus.installed ? "本机已安装 v" + runtimeStatus.version : "本机尚未安装";
     if (runtimeStatus.loadedVersion && runtimeStatus.loadedVersion !== runtimeStatus.version) {
       runtimeDescription += "；当前已加载 v" + runtimeStatus.loadedVersion;
     }
     if (runtimeStatus.restartRequired) runtimeDescription += "，重启后使用磁盘版本";
+    runtimeDescription += "；本插件已核验适配到 v" + supportedVersion;
+    if (installedRelation !== null && installedRelation > 0) runtimeDescription += "，本机版本高于该范围";
+    else if (installedRelation !== null && installedRelation < 0) runtimeDescription += "，本机版本低于该范围";
     if (installing) {
       var phaseText = runtimeStatus.installPhase === "checking" ? "正在检查官方运行时…"
         : runtimeStatus.installPhase === "downloading" ? "正在下载官方运行时…"
@@ -4126,11 +4175,12 @@ var IMTExtendedPlugin = (function () {
     else if (runtimeStatus.latestState === "error") runtimeDescription += "；暂时无法获取官方当前版本";
     else if (runtimeStatus.latestVersion) {
       runtimeDescription += "；官方当前版本 v" + runtimeStatus.latestVersion;
-      if (runtimeStatus.installed && runtimeStatus.version === runtimeStatus.latestVersion) runtimeDescription += "，本机已是当前版本";
+      if (latestRelation !== null && latestRelation > 0) runtimeDescription += "（尚未核验适配）";
+      if (installedIsCurrent) runtimeDescription += "，本机已是当前版本";
     }
     else runtimeDescription += "；即将检查官方当前版本";
-    var runtimeIsCurrent = !installing && runtimeStatus.installed && runtimeStatus.latestState === "available" &&
-      runtimeStatus.latestVersion && runtimeStatus.version === runtimeStatus.latestVersion;
+    var runtimeIsCurrent = !installing && runtimeStatus.latestState === "available" && installedIsCurrent;
+    var supportedIsInstalled = !installing && installedRelation === 0;
     new obsidian.Setting(containerEl).setName(runtimeStatus.installed ? "运行时 v" + runtimeStatus.version : "安装翻译运行时").setDesc(runtimeDescription).addButton(function (b) {
       var buttonText = installing ? (runtimeStatus.installed ? "正在更新…" : "正在安装…")
         : runtimeIsCurrent ? "已是最新版本"
@@ -4145,7 +4195,33 @@ var IMTExtendedPlugin = (function () {
           if (!self.plugin._isUnloaded) self.display();
         });
       });
+    }).addButton(function (b) {
+      b.setButtonText(installing ? "正在安装已核验版本…"
+        : supportedIsInstalled ? "已安装已核验版本 v" + supportedVersion
+        : "安装已核验版本 v" + supportedVersion);
+      if (typeof b.setDisabled === "function") b.setDisabled(!!supportedIsInstalled || installing);
+      if (supportedIsInstalled || installing || typeof b.onClick !== "function") return;
+      b.onClick(function () {
+        if (typeof b.setDisabled === "function") b.setDisabled(true);
+        Promise.resolve(self.plugin._installSupportedRuntime()).then(function () {
+          if (!self.plugin._isUnloaded) self.display();
+        });
+      });
     });
+    var installedBeyondVerified = installedRelation !== null && installedRelation > 0;
+    var officialBeyondVerified = latestRelation !== null && latestRelation > 0;
+    if (installedBeyondVerified) {
+      containerEl.createDiv({
+        cls: "imt-runtime-support-note",
+        text: "本机运行时 v" + runtimeStatus.version + " 高于已核验适配版本 v" + supportedVersion + "：宿主弹窗自动翻译与区域增量补译按已核验版本核验，超出范围时会暂停；可安装已核验版本并重启 Obsidian 恢复。",
+      });
+    }
+    if (officialBeyondVerified) {
+      containerEl.createDiv({
+        cls: "imt-runtime-support-note",
+        text: "官方当前版本 v" + runtimeStatus.latestVersion + " 尚未核验适配：本插件按已核验适配版本 v" + supportedVersion + " 核验宿主弹窗自动翻译与区域增量补译，更新到该官方版本会暂停这些增强。",
+      });
+    }
     if (installing) {
       var progressLabel = containerEl.createEl("label", { cls: "imt-runtime-progress" });
       progressLabel.createEl("span", { text: phaseText });

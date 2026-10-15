@@ -47,9 +47,12 @@ function replaceRuntimeFile(filePath, temporaryPath) {
   try { fs.unlinkSync(backupPath); } catch (error) {}
 }
 
-function installRuntime({ pluginDir, content }) {
+function installRuntime({ pluginDir, content, expectedVersion, source }) {
   const version = extractRuntimeVersion(content);
   if (!version) throw new Error("Runtime version is missing or invalid");
+  if (expectedVersion && version !== expectedVersion) {
+    throw new Error("Runtime version does not match the expected version");
+  }
   const filePath = runtimePath(pluginDir);
   const temporaryPath = filePath + ".installing-" + process.pid + "-" + Date.now();
   try {
@@ -58,7 +61,7 @@ function installRuntime({ pluginDir, content }) {
   } finally {
     try { if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath); } catch (error) {}
   }
-  return { content, version, source: OFFICIAL_RUNTIME_URL };
+  return { content, version, source: typeof source === "string" && source ? source : OFFICIAL_RUNTIME_URL };
 }
 
 module.exports = {

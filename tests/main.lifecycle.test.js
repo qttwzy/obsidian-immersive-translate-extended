@@ -26,6 +26,13 @@ const {
   DOCUMENT_RUNTIME_REQUEST_CHANNEL,
   DOCUMENT_RUNTIME_WORLD_ID,
 } = require("../plugin/document-runtime");
+const {
+  OFFICIAL_RUNTIME_URL,
+  SUPPORTED_OFFICIAL_RUNTIME_VERSION,
+  officialRuntimeVersionUrl,
+} = require("../plugin/runtime-contract");
+
+const VERIFIED_RUNTIME_SOURCE = "// ==UserScript==\n// @version " + SUPPORTED_OFFICIAL_RUNTIME_VERSION + "\n// ==/UserScript==\nwindow.__imtRuntime = 'verified';\n";
 
 const noticeMessages = harness.noticeMessages;
 const openedModals = harness.openedModals;
@@ -727,6 +734,252 @@ test("a stale plugin instance cannot overwrite a replacement runtime", async (t)
   assert.deepEqual(await staleInstall, { ok: false, version: "" });
   assert.equal(replacement._getRuntimeStatus().version, "9.8.0");
   replacement.onunload();
+});
+
+function settingsRuntimeButton(containerEl, text) {
+  return findElement(containerEl, (element) => element.tagName === "BUTTON" && element.textContent === text);
+}
+
+function makeVerifiedRuntimePlugin(t, installedContent) {
+  const plugin = makePlugin();
+  const pluginDir = createInstalledRuntimeDirectory(t, installedContent);
+  fs.writeFileSync(path.join(pluginDir, "manifest.json"), JSON.stringify({ id: "immersive-translate-extended", version: "4.0.0" }));
+  plugin._getPluginDir = () => pluginDir;
+  plugin.loadSettings = async function () {};
+  plugin._interceptNavigation = function () {};
+  plugin._detectAndHandleConflicts = function () {};
+  plugin._activateIMT = async function () { return true; };
+  plugin._startTranslationViewBridge = function () {};
+  plugin._startHostSurfaceTranslationObserver = function () {};
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  return { plugin, pluginDir };
+}
+
+test("settings show the verified runtime version and install it on demand", async (t) => {
+  setupRuntime();
+  const { plugin, pluginDir } = makeVerifiedRuntimePlugin(t, "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n");
+  const verifiedUrl = officialRuntimeVersionUrl(SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+  const requested = [];
+  harness.requestUrlImpl = async function (options) {
+    requested.push(options.url);
+    return { status: 200, text: VERIFIED_RUNTIME_SOURCE, headers: {} };
+  };
+
+  await plugin.onload();
+  try {
+    const tab = addedSettingTabs[0];
+    tab.display();
+    const initialText = collectText(tab.containerEl);
+    assert.match(initialText, /本机已安装 v9\.7\.3/);
+    assert.ok(initialText.includes("本插件已核验适配到 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+
+    const installButton = settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+    assert.ok(installButton);
+    assert.equal(installButton.disabled, false);
+    installButton.dispatchEvent({ type: "click" });
+    await tick();
+
+    assert.deepEqual(requested, [verifiedUrl]);
+    assert.equal(fs.readFileSync(path.join(pluginDir, "userscript.runtime.js"), "utf8"), VERIFIED_RUNTIME_SOURCE);
+    const status = plugin._getRuntimeStatus();
+    assert.equal(status.version, SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+    assert.equal(status.latestVersion, "");
+    assert.equal(status.latestState, "idle");
+    assert.ok(collectText(tab.containerEl).includes("本机已安装 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+    assert.equal(settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, true);
+  } finally {
+    plugin.onunload();
+  }
+});
+
+test("the verified runtime install neither waits for nor invalidates the official version probe", async (t) => {
+  setupRuntime();
+  const { plugin, pluginDir } = makeVerifiedRuntimePlugin(t, "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\n");
+  plugin._isEngineLoaded = () => true;
+  let finishProbe;
+  const requested = [];
+  harness.requestUrlImpl = function (options) {
+    requested.push(options.url);
+    if (options.url === OFFICIAL_RUNTIME_URL) {
+      return new Promise((resolve) => { finishProbe = resolve; });
+    }
+    assert.equal(options.url, officialRuntimeVersionUrl(SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+    return Promise.resolve({ status: 200, text: VERIFIED_RUNTIME_SOURCE, headers: {} });
+  };
+
+  await plugin.onload();
+  try {
+    const tab = addedSettingTabs[0];
+    tab.display();
+    const probe = plugin._checkLatestRuntimeVersion(true);
+    assert.equal(plugin._getRuntimeStatus().latestState, "checking");
+
+    const install = plugin._installSupportedRuntime();
+    assert.equal(plugin._getRuntimeStatus().installPhase, "downloading");
+    assert.ok(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"));
+    assert.equal(settingsRuntimeButton(tab.containerEl, "正在安装已核验版本…")?.disabled, true);
+
+    assert.deepEqual(await install, { ok: true, version: SUPPORTED_OFFICIAL_RUNTIME_VERSION, restartRequired: true });
+    assert.deepEqual(requested, [OFFICIAL_RUNTIME_URL, officialRuntimeVersionUrl(SUPPORTED_OFFICIAL_RUNTIME_VERSION)]);
+    assert.equal(plugin._getRuntimeStatus().latestState, "checking");
+    assert.equal(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"), null);
+    assert.equal(plugin._getRuntimeStatus().version, SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+
+    finishProbe({ status: 200, text: "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\n", headers: {} });
+    assert.deepEqual(await probe, { ok: true, version: "9.8.0" });
+    const status = plugin._getRuntimeStatus();
+    assert.equal(status.latestState, "available", "the running probe must still converge");
+    assert.equal(status.latestVersion, "9.8.0");
+    assert.equal(status.version, SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+  } finally {
+    plugin.onunload();
+  }
+});
+
+test("settings mark the verified runtime as installed instead of offering it again", async (t) => {
+  setupRuntime();
+  const { plugin } = makeVerifiedRuntimePlugin(t, VERIFIED_RUNTIME_SOURCE);
+
+  await plugin.onload();
+  try {
+    const tab = addedSettingTabs[0];
+    tab.display();
+    const text = collectText(tab.containerEl);
+    assert.ok(text.includes("本机已安装 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+    const button = settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+    assert.ok(button);
+    assert.equal(button.disabled, true);
+    assert.doesNotMatch(text, /尚未核验适配/);
+    assert.doesNotMatch(text, /高于已核验适配版本/);
+  } finally {
+    plugin.onunload();
+  }
+});
+
+test("settings name the installed verified runtime and flag each out-of-range version separately", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadSettings = async function () {};
+  plugin._interceptNavigation = function () {};
+  plugin._detectAndHandleConflicts = function () {};
+  plugin._activateIMT = async function () { return false; };
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: SUPPORTED_OFFICIAL_RUNTIME_VERSION,
+      loadedVersion: "",
+      latestVersion: "99.0.0",
+      latestState: "available",
+      installPhase: "",
+      installError: "",
+      restartRequired: false,
+    };
+  };
+
+  await plugin.onload();
+  const tab = addedSettingTabs[0];
+  tab.display();
+  const officialBeyond = collectText(tab.containerEl);
+  assert.ok(officialBeyond.includes("本插件已核验适配到 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+  assert.ok(officialBeyond.includes("官方当前版本 v99.0.0（尚未核验适配）"));
+  assert.match(officialBeyond, /官方当前版本 v99\.0\.0 尚未核验适配/);
+  assert.match(officialBeyond, /宿主弹窗自动翻译/);
+  assert.doesNotMatch(officialBeyond, /本机运行时 v[^ ]+ 高于已核验适配版本/, "the installed runtime is the verified one");
+  assert.equal(settingsRuntimeButton(tab.containerEl, "更新运行时")?.disabled, false);
+  assert.equal(settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, true);
+
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: "99.0.0",
+      loadedVersion: "",
+      latestVersion: "",
+      latestState: "idle",
+      installPhase: "",
+      installError: "",
+      restartRequired: false,
+    };
+  };
+  tab.display();
+  const installedBeyond = collectText(tab.containerEl);
+  assert.match(installedBeyond, /本机版本高于该范围/);
+  assert.ok(installedBeyond.includes("本机运行时 v99.0.0 高于已核验适配版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+  assert.doesNotMatch(installedBeyond, /尚未核验适配/, "the official version is unknown, not out of range");
+  assert.equal(settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, false);
+  plugin.onunload();
+});
+
+test("equivalent official and installed versions keep the update action disabled", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadSettings = async function () {};
+  plugin._interceptNavigation = function () {};
+  plugin._detectAndHandleConflicts = function () {};
+  plugin._activateIMT = async function () { return false; };
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: "9.8",
+      loadedVersion: "",
+      latestVersion: "9.8.0",
+      latestState: "available",
+      installPhase: "",
+      installError: "",
+      restartRequired: false,
+    };
+  };
+
+  await plugin.onload();
+  const tab = addedSettingTabs[0];
+  tab.display();
+  assert.equal(settingsRuntimeButton(tab.containerEl, "已是最新版本")?.disabled, true);
+  assert.match(collectText(tab.containerEl), /本机已是当前版本/);
+
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: "9.8.0+build.7",
+      loadedVersion: "",
+      latestVersion: "9.8.0",
+      latestState: "available",
+      installPhase: "",
+      installError: "",
+      restartRequired: false,
+    };
+  };
+  tab.display();
+  assert.equal(settingsRuntimeButton(tab.containerEl, "已是最新版本")?.disabled, true);
+  assert.match(collectText(tab.containerEl), /本机已是当前版本/);
+  plugin.onunload();
+});
+
+test("the verified runtime path rejects a download whose version does not match", async (t) => {
+  setupRuntime();
+  const installedContent = "// ==UserScript==\n// @version 9.7.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n";
+  const { plugin, pluginDir } = makeVerifiedRuntimePlugin(t, installedContent);
+  harness.requestUrlImpl = async function (options) {
+    assert.equal(options.url, officialRuntimeVersionUrl(SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+    return { status: 200, text: "// ==UserScript==\n// @version 9.8.0\n// ==/UserScript==\n", headers: {} };
+  };
+
+  await plugin.onload();
+  try {
+    const tab = addedSettingTabs[0];
+    tab.display();
+    settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION).dispatchEvent({ type: "click" });
+    await tick();
+
+    assert.equal(fs.readFileSync(path.join(pluginDir, "userscript.runtime.js"), "utf8"), installedContent);
+    const status = plugin._getRuntimeStatus();
+    assert.equal(status.version, "9.7.3");
+    assert.equal(status.installError, "脚本版本与已核验版本不一致");
+    assert.match(String(noticeMessages.at(-1)), /与已核验版本/);
+    assert.match(collectText(tab.containerEl), /上次安装失败，可重试/);
+  } finally {
+    plugin.onunload();
+  }
 });
 
 test("legacy secondary-runtime preferences are discarded in favor of the floating-ball userscript config", async () => {
