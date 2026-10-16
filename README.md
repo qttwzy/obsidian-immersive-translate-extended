@@ -7,7 +7,7 @@ Immersive Translate, extended into your vault.
 
 ## 中文
 
-在 Obsidian 桌面版中使用沉浸式翻译悬浮球、划词翻译、Markdown 双语翻译、账户 Dashboard、PDF 翻译工作区，以及设置与第三方插件等宿主窗口的界面翻译。插件设置会显示本机翻译运行时版本、官方当前版本和本插件已核验适配版本，并提供从官方地址安装或更新，以及一键装回已核验适配版本的操作。
+在 Obsidian 桌面版中使用沉浸式翻译悬浮球、划词翻译、Markdown 双语翻译、账户 Dashboard、PDF 翻译工作区，以及设置与第三方插件等宿主窗口的界面翻译。插件设置会显示本机运行时、官方当前版本和本插件已验证版本；可以从官方地址安装或更新，也可以安装已验证版本。
 
 本项目是社区维护的非官方 Obsidian 插件，与 Obsidian、Immersive Translate 及各翻译服务提供方没有官方合作或背书关系。相关名称和商标归各自权利人所有。
 
@@ -23,7 +23,7 @@ Immersive Translate, extended into your vault.
 | 插件冲突 | 检测重叠的翻译能力，由用户决定是否暂停 |
 | 账户与 Dashboard | 查看账户状态，打开独立 Dashboard 登录、管理账户并同步高级设置 |
 | PDF 与文档 | 从 PDF 视图打开官方文档工作区；其他支持格式可在工作区手动选择 |
-| 运行时安装 | 显示本机、官方当前与已核验适配版本，由用户从官方地址安装或更新，也可装回已核验适配版本 |
+| 运行时安装 | 设置页显示本机、官方当前与本插件已验证版本；可从官方地址安装或更新，也可安装已验证版本。官方运行时更新后，设置窗口的自动翻译与局部重译会关闭，并提示安装已验证版本或等待插件更新 |
 
 翻译引擎、账户要求、付费能力和可用地区由本机安装的运行时及用户选择的服务决定。
 
@@ -40,9 +40,9 @@ Immersive Translate, extended into your vault.
 1. 解压 ZIP。
 2. 把其中的 `immersive-translate-extended/` 文件夹放到 `<你的 Vault>/.obsidian/plugins/immersive-translate-extended/`。
 3. 重启 Obsidian，在“设置 → 第三方插件”中启用 **Immersive Translate Extended**。
-4. 打开插件设置，在“翻译运行时”中按需安装或更新；需要回到本插件已核验适配的版本时点击“安装已核验版本”。
+4. 打开插件设置，在“翻译运行时”中按需安装或更新；需要安装本插件已验证版本时，点“安装已验证版本”。
 
-安装过程中显示进度指示条与当前阶段：检查、下载、校验、写入或启用；失败后可重试。已在运行的引擎更新后仍需重启 Obsidian 生效。已核验适配版本指本插件已核验过的运行时版本，宿主弹窗自动翻译与区域增量补译按该版本核验；装回操作从官方 GitHub Release 的对应 tag 获取脚本，并在写入前核对脚本 `@version`。
+安装过程中显示进度指示条与当前阶段：检查、下载、校验、写入或启用；失败后可重试。已在运行的引擎更新后仍需重启 Obsidian 才能生效。设置窗口的自动翻译与局部重译只在本插件已验证的运行时版本上工作；安装操作从官方 GitHub Release 的对应 tag 获取脚本，并在写入前核对脚本 `@version`。
 
 ZIP 中包含 `main.js`、`dashboard-preload.js`、`document-preload.js`、`document-runtime.js`、`gm-element.js`、`gm-headers.js`、`gm-request-body.js`、`gm-response-value.js`、`manifest.json`、`styles.css`、`LICENSE` 和 `THIRD_PARTY_NOTICES.md`。翻译运行时由设置页从官方来源安装到本机插件目录。
 
@@ -93,7 +93,7 @@ This is an unofficial, community-maintained Obsidian plugin. It is not affiliate
 
 Download `immersive-translate-extended-<version>.zip` from [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install or update the translation runtime from plugin settings when needed, or choose the verified-version action to return to the runtime version this plugin has verified. With UI translation enabled and the main window in bilingual or translation-only mode, detached Settings and community plugin or theme windows follow that same translation state.
 
-An installation progress indicator shows the current stage: checking, downloading, validating, writing, or activating. Failed installations can be retried. Updating an already running engine still requires an Obsidian restart. The verified-version action fetches the script from the matching tag of the official GitHub Release and checks its `@version` before writing; the verified version covers the host-popout auto-translation and regional incremental translation paths this plugin has validated.
+An installation progress indicator shows the current stage: checking, downloading, validating, writing, or activating. Failed installations can be retried. Updating an already running engine still requires an Obsidian restart. The verified-version action fetches the script from the matching tag of the official GitHub Release and checks its `@version` before writing; automatic translation and partial re-translation in Settings and other host windows only run on the runtime version this plugin has verified. Updating the official runtime first turns them off; the plugin says so once at startup and in its settings, and you can install the runtime version it has verified and restart Obsidian, or wait for a plugin update.
 
 The ZIP contains `main.js`, `dashboard-preload.js`, `document-preload.js`, `document-runtime.js`, `gm-element.js`, `gm-headers.js`, `gm-request-body.js`, `gm-response-value.js`, `manifest.json`, `styles.css`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. The translation runtime is installed locally from the official source through plugin settings.
 

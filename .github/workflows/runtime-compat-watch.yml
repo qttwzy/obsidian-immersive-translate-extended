@@ -1,0 +1,62 @@
+name: Runtime compatibility watch
+
+on:
+  schedule:
+    # Weekly, before the working week starts in Asia/Shanghai.
+    - cron: "17 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Check the official runtime against the compatibility matrix
+        id: compat
+        run: |
+          set +e
+          node scripts/check-runtime-compat.js --json --report runtime-compat.md > runtime-compat.json
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p 'require("./runtime-compat.json").version || "unknown"')" >> "$GITHUB_OUTPUT"
+          cat runtime-compat.md >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Open or update the drift issue
+        if: steps.compat.outputs.code == '3'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create runtime-drift --color FBCA04 --description "Official runtime moved past the verified compatibility matrix" --force
+          existing=$(gh issue list --label runtime-drift --state open --limit 1 --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file runtime-compat.md
+          else
+            gh issue create \
+              --title "官方运行时漂移：v${{ steps.compat.outputs.version }}" \
+              --label runtime-drift \
+              --body-file runtime-compat.md
+          fi
+
+      - name: Fail when the runtime drifted or could not be read
+        if: steps.compat.outputs.code != '0'
+        run: |
+          echo "check-runtime-compat exited with ${{ steps.compat.outputs.code }}" >&2
+          exit 1

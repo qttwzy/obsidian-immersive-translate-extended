@@ -2990,6 +2990,7 @@ __imtFactories["userscript-compat"] = function (module, exports, require) {
 "use strict";
 
 const { HOST_UI_REGIONS } = __imtRequire("host-ui-regions");
+const { readRuntimeVersion, resolveRuntimeCompatibility } = __imtRequire("runtime-contract");
 
 const UPSTREAM_MOCK_SIDE_PANEL_MIN_WIDTH = 435;
 const OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH = 280;
@@ -3000,6 +3001,11 @@ const OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE = "obsidianHostUpdateTargetLa
 const OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE = "obsidianHostTranslatePage";
 const OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE = "obsidianHostTranslateRegions";
 const MAX_HOST_CONTENT_BRIDGE_DISPATCHER_SPAN = 128 * 1024;
+const JS_IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 // Minified dispatcher locals change across userscript releases (i/a in 1.32.x,
 // o/i in 1.33.x). Capture the names instead of hardcoding them.
 const HOST_CONTENT_BRIDGE_ANCHOR_PATTERN = /else if\(([A-Za-z_$][A-Za-z0-9_$]*)\.type(?:===|==)["']switchTranslationMode["']\)\{/;
@@ -3008,6 +3014,8 @@ const HOST_CONTENT_BRIDGE_RESPONSE_ANCHOR_PATTERN = /([A-Za-z_$][A-Za-z0-9_$]*)\
 
 const MOCK_SIDE_PANEL_DECLARATION = /([A-Za-z_$][A-Za-z0-9_$]*\s*=\s*)(\d+)(\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(["'])mock-side-panel-width\4\s*,\s*[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(["'])cursor-mock-side-panel-host\5)/;
 
+// Compatibility patches select their anchor shape from the compatibility
+// declaration for the source's declared version (see runtime-contract).
 function countOccurrences(source, value) {
   let count = 0;
   let offset = 0;
@@ -3205,12 +3213,20 @@ function patchUserscriptHostContentBridge(source) {
 
 // This bridge is installed after the host content bridge and lifecycle guard.
 // Keep the upstream engine's paragraph callback by calling its own bounded
-// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3).
+// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3, $M in 1.34.1).
+const REGION_BRIDGE_SHAPES = {
+  "1.33.2": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "w9", traverse: "Ap", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
+  "1.33.3": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "A9", traverse: "Mp", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
+  "1.34.x": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Of", timing: "pf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
+};
+
 function patchUserscriptHostRegionBridge(source) {
   if (typeof source !== "string") return unchanged(source, "invalid-source");
-  if (/^\/\/ @version\s+1\.32\./m.test(source)) return patchLegacyHostRegionBridge(source);
-  const version = /^\/\/ @version\s+(1\.33\.[23])\s*$/m.exec(source)?.[1];
-  if (!version) return unchanged(source, "unsupported-version");
+  const compatibility = resolveRuntimeCompatibility(readRuntimeVersion(source));
+  if (!compatibility.capabilities.regionBridge) return unchanged(source, "unsupported-version");
+  if (compatibility.profile === "1.32.x") return patchLegacyHostRegionBridge(source);
+  const shape = REGION_BRIDGE_SHAPES[compatibility.profile];
+  if (!shape) return unchanged(source, "unsupported-version");
 
   const marker = "__imtHostRegionBridgeV1";
   const markerCount = countOccurrences(source, marker);
@@ -3225,8 +3241,9 @@ function patchUserscriptHostRegionBridge(source) {
   const branchPattern = new RegExp('else if\\((' + identifier + ')\\.type==="' + OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE + '"\\)await ' + identifier + '\\(' + identifier + ',\\1\\.data\\),(' + identifier + ')=\\{success:!0\\};');
   const branches = findPatternMatches(source, branchPattern);
   const responses = findPatternMatches(source, HOST_CONTENT_BRIDGE_RESPONSE_ANCHOR_PATTERN);
-  const traverseAssignment = "Ve.traverseContent=" + (version === "1.33.2" ? "Ap" : "Mp") + ",Ve.walkContainer=" + (version === "1.33.2" ? "Ap" : "Mp");
-  const wrapperPattern = /async function ([A-Za-z_$][A-Za-z0-9_$]*)\(e,t,n,r\)\{if\(Yr\(\)\)return;let i=Ci\(e\.ctx\);await (?:bp|Tp)\("initial_traverse_ms",\(\)=>e\.traverseContent\(/;
+  const traverseAssignment = shape.engine + ".traverseContent=" + shape.traverse + "," + shape.engine + ".walkContainer=" + shape.traverse;
+  const wrapperPattern = new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t,n,r\\)\\{if\\(" + escapeRegExp(shape.entryCondition) +
+    "\\)return;let i=" + escapeRegExp(shape.context) + "\\(e\\.ctx\\);await " + shape.timing + "\\(\"initial_traverse_ms\",\\(\\)=>e\\.traverseContent\\(");
   const wrappers = findPatternMatches(source, wrapperPattern);
   const counts = [branches.length, responses.length, wrappers.length, countOccurrences(source, traverseAssignment)];
   if (counts.some(count => count === 0)) return unchanged(source, "anchor-not-found");
@@ -3235,7 +3252,7 @@ function patchUserscriptHostRegionBridge(source) {
   const branch = branches[0];
   const response = responses[0];
   const wrapper = wrappers[0];
-  const expectedWrapper = version === "1.33.2" ? "w9" : "A9";
+  const expectedWrapper = shape.wrapper;
   if (wrapper[1] !== expectedWrapper || branch[1] !== response[2] || branch[2] !== response[3] ||
       branch.index >= response.index || response.index - branch.index > MAX_HOST_CONTENT_BRIDGE_DISPATCHER_SPAN ||
       findEnclosingArrowFunctionBodyStart(source, branch.index) !== findEnclosingArrowFunctionBodyStart(source, response.index) ||
@@ -3249,9 +3266,9 @@ function patchUserscriptHostRegionBridge(source) {
     const selectors=${JSON.stringify(HOST_UI_REGIONS)};
     const names=data?.regions;
     if(!data||typeof data!=="object"||Array.isArray(data)||Object.keys(data).some(key=>key!=="regions"&&key!=="__imtHostGeneration")||!Array.isArray(names)||names.length===0||names.length>16||names.some(name=>typeof name!=="string"||!Object.prototype.hasOwnProperty.call(selectors,name)))return{success:false,error:"invalid-region"};
-    const policy=globalThis.__imtHostTranslationPolicy,engine=Ve,engineId=engine?.id,generation=data.__imtHostGeneration;
-    if(!engine||!engineId||!engine.ctx||typeof engine.traverseContent!=="function"||typeof engine.walkContainer!=="function"||Yr())return{success:false,error:"engine-not-ready"};
-    const current=()=>Number.isSafeInteger(generation)&&generation>=0&&globalThis.__imtHostTranslationPolicy===policy&&policy?.active===true&&policy.generation===generation&&(policy.mode==="dual"||policy.mode==="translation")&&Ve===engine&&engine.id===engineId&&!Yr()&&(engine.translateState==="dual"||engine.translateState==="translation");
+    const policy=globalThis.__imtHostTranslationPolicy,engine=${shape.engine},engineId=engine?.id,generation=data.__imtHostGeneration;
+    if(!engine||!engineId||!engine.ctx||typeof engine.traverseContent!=="function"||typeof engine.walkContainer!=="function"||${shape.stopped}())return{success:false,error:"engine-not-ready"};
+    const current=()=>Number.isSafeInteger(generation)&&generation>=0&&globalThis.__imtHostTranslationPolicy===policy&&policy?.active===true&&policy.generation===generation&&(policy.mode==="dual"||policy.mode==="translation")&&${shape.engine}===engine&&engine.id===engineId&&!${shape.stopped}()&&(engine.translateState==="dual"||engine.translateState==="translation");
     if(!current())return{success:false,error:"stale-host-policy"};
     let visited=0,scanned=0;
     const owned=node=>node.immersive||node.formatHtml||node.id==="immersive-translate-popup"||typeof node.className==="string"&&/(?:^|\\s)(?:immersive-translate-|notranslate(?:\\s|$))/.test(node.className);
@@ -3259,7 +3276,7 @@ function patchUserscriptHostRegionBridge(source) {
       if(!node||node.nodeType!==1||node.ownerDocument!==document||!node.isConnected)return{protected:true,nodes:[]};
       if(++visited>4096)throw new Error("region-too-large");
       if(owned(node)||node.hasAttribute("data-imt-p")||node.paragraphs?.length)return{protected:true,nodes:[]};
-      const marked=ur.hasMark(node),children=Array.from(node.children||[]).map(collect);
+      const marked=${shape.marks}.hasMark(node),children=Array.from(node.children||[]).map(collect);
       if(!marked&&children.every(child=>!child.protected))return{protected:false,nodes:[node]};
       return{protected:true,nodes:children.flatMap(child=>child.nodes)};
     }
@@ -3328,27 +3345,68 @@ function patchLegacyHostRegionBridge(source) {
   return { source: withHelper.replace(translate[0][0], translate[0][0] + branch), changed: true, reason: "patched" };
 }
 
-// These lifecycle boundaries were inspected in the official 1.33.2 and 1.33.3
-// runtimes. Capture minified names, but require every surrounding call shape.
+// These lifecycle boundaries were inspected in the official 1.33.2, 1.33.3 and
+// 1.34.1 runtimes. Capture minified names, but require the profile's full call
+// shape before editing a source.
+const LIFECYCLE_GUARD_SHAPE_133 = {
+  parser: new RegExp("function (" + JS_IDENTIFIER + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0\\}"),
+  page: new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t\\)\\{let n=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"),
+  context: /let n=await ([A-Za-z_$][A-Za-z0-9_$]*)\(e,t\),r;/,
+  invocation: new RegExp("await " + JS_IDENTIFIER + "\\(\\\"translatePage\\\"\\)\\(n,\\{trigger:" + JS_IDENTIFIER + "\\(t\\),\\.\\.\\.r!==void 0\\?\\{documentTerminologyInput:r\\}:\\{\\}\\}\\)"),
+  parserFields: "let{trigger:t,startedAt:n,documentTerminologyInput:r,...i}=e;return{state:Object.keys(i).length?i:void 0,trigger:t,startedAt:n,documentTerminologyInput:r}",
+  parserFieldsPatched: "let{trigger:t,startedAt:n,documentTerminologyInput:r,__imtHostGeneration:__imtHostGeneration,...i}=e;return{state:Object.keys(i).length?i:void 0,trigger:t,startedAt:n,documentTerminologyInput:r}",
+  pagePreamble: function (parser) { return "let o=e,{state:a,trigger:s,startedAt:l,documentTerminologyInput:u}=" + parser + "(t),c=typeof s==\"string\"?s:\"unknown\";"; },
+  initialCheck: /finally\{d=\(globalThis\.performance\?\.now\?\.\(\)\?\?Date\.now\(\)\)-b\}\}if\(!([A-Za-z_$][A-Za-z0-9_$]*)/,
+  beforeGate: function (gate) { return new RegExp("if\\(" + JS_IDENTIFIER + "\\(o\\),await " + JS_IDENTIFIER + "\\(o,c,m\\)\\|\\|await " + JS_IDENTIFIER + "\\(o,m\\)\\)return;let p,f=await " + escapeRegExp(gate) + "\\(\\{"); },
+  beforeGateInsert: ["return;let p,f=await", "return;if(!__imtHostCurrent())return;let p,f=await"],
+  gateResult: ["});if(!f)return;let h=f.session_id;", "});if(!__imtHostCurrent()||!f)return;let h=f.session_id;"],
+  recursionTail: "...u!==void 0?{documentTerminologyInput:u}:{}})};",
+};
+const LIFECYCLE_GUARD_SHAPE_134 = {
+  parser: new RegExp("function (" + JS_IDENTIFIER + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0,enableObserver:void 0\\}"),
+  page: new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t\\)\\{let n=t\\?\\.enableObserver===!1\\?oE\\(\\):void 0;try\\{let r=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"),
+  context: /let r=await ([A-Za-z_$][A-Za-z0-9_$]*)\(e,t\),i;/,
+  invocation: new RegExp(escapeRegExp('await Xa("translatePage")(r,{trigger:hQ(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
+  parserFields: "let{trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i,...o}=e;return{state:Object.keys(o).length?o:void 0,trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i}",
+  parserFieldsPatched: "let{trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i,__imtHostGeneration:__imtHostGeneration,...o}=e;return{state:Object.keys(o).length?o:void 0,trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i}",
+  pagePreamble: function (parser) { return "let a=e,{state:s,trigger:l,startedAt:u,documentTerminologyInput:c,enableObserver:g}=" + parser + "(t),d=typeof l==\"string\"?l:\"unknown\";"; },
+  initialCheck: /finally\{p=\(globalThis\.performance\?\.now\?\.\(\)\?\?Date\.now\(\)\)-v\}\}if\(!([A-Za-z_$][A-Za-z0-9_$]*)/,
+  beforeGate: function (gate) { return new RegExp("if\\(" + JS_IDENTIFIER + "\\(a\\),await " + JS_IDENTIFIER + "\\(a,d,f\\)\\|\\|await " + JS_IDENTIFIER + "\\(a,f\\)\\)return;let h,b=await " + escapeRegExp(gate) + "\\(\\{"); },
+  beforeGateInsert: ["return;let h,b=await", "return;if(!__imtHostCurrent())return;let h,b=await"],
+  gateResult: ["});if(!b)return;let y=b.session_id;", "});if(!__imtHostCurrent()||!b)return;let y=b.session_id;"],
+  recursionTail: "...g===!1?{enableObserver:!1}:{}})};",
+};
+const LIFECYCLE_GUARD_SHAPES = {
+  "1.33.2": LIFECYCLE_GUARD_SHAPE_133,
+  "1.33.3": LIFECYCLE_GUARD_SHAPE_133,
+  "1.34.x": LIFECYCLE_GUARD_SHAPE_134,
+};
 function patchUserscriptHostLifecycleGuard(source) {
   if (typeof source !== "string") return unchanged(source, "invalid-source");
-  if (!/^\/\/ @version\s+1\.33\.[23]\s*$/m.test(source)) return unchanged(source, "unsupported-version");
+  const compatibility = resolveRuntimeCompatibility(readRuntimeVersion(source));
+  if (!compatibility.capabilities.lifecycleGuard) return unchanged(source, "unsupported-version");
+  const shape = LIFECYCLE_GUARD_SHAPES[compatibility.profile];
+  if (!shape) return unchanged(source, "unsupported-version");
 
+  const guardPrologue = "let __imtHostPolicy=globalThis.__imtHostTranslationPolicy,__imtHostExpectedGeneration=t?.__imtHostGeneration??__imtHostPolicy?.generation,__imtHostCurrent=()=>!__imtHostPolicy?t?.__imtHostGeneration===undefined:globalThis.__imtHostTranslationPolicy===__imtHostPolicy&&__imtHostPolicy.active===!0&&__imtHostPolicy.generation===__imtHostExpectedGeneration;if(!__imtHostCurrent())return;";
   const marker = "__imtHostLifecycleGuardV1";
   const alreadyPatched = source.includes(marker);
   if (alreadyPatched && countOccurrences(source, marker) !== 1) return unchanged(source, "partial-patch");
   if (alreadyPatched) {
+    // Remove exactly the fragments this patch inserts, then re-apply them. The
+    // removal is shape-independent: every fragment below is our own text.
     let original = source
-      .replace("/* __imtHostLifecycleGuardV1 */let __imtHostPolicy=globalThis.__imtHostTranslationPolicy,__imtHostExpectedGeneration=t?.__imtHostGeneration??__imtHostPolicy?.generation;", "")
+      .replace(guardPrologue, "")
+      .replace("/* __imtHostLifecycleGuardV1 */", "")
+      .replace("let __imtHostPolicy=globalThis.__imtHostTranslationPolicy,__imtHostExpectedGeneration=t?.__imtHostGeneration??__imtHostPolicy?.generation;", "")
       .replace("if(!__imtHostPolicy&&t?.__imtHostGeneration!==undefined||__imtHostPolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostPolicy||!__imtHostPolicy.active||__imtHostPolicy.generation!==__imtHostExpectedGeneration))return;", "")
       .replace("let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;", "")
       .replace("if(__imtHostRestorePolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostRestorePolicy||__imtHostRestorePolicy.generation!==__imtHostRestoreGeneration))return;", "")
       .replaceAll(",...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}", "")
       .replace(",__imtHostGeneration:__imtHostGeneration", "")
-      .replace("let __imtHostPolicy=globalThis.__imtHostTranslationPolicy,__imtHostExpectedGeneration=t?.__imtHostGeneration??__imtHostPolicy?.generation,__imtHostCurrent=()=>!__imtHostPolicy?t?.__imtHostGeneration===undefined:globalThis.__imtHostTranslationPolicy===__imtHostPolicy&&__imtHostPolicy.active===!0&&__imtHostPolicy.generation===__imtHostExpectedGeneration;", "")
       .replaceAll("if(!__imtHostCurrent())return;", "")
       .replace("isCurrent:__imtHostCurrent,", "")
-      .replace("if(!__imtHostCurrent()||!f)return;", "if(!f)return;")
+      .replace("if(!__imtHostCurrent()||", "if(")
       .replace(/onRetry:\(\)=>\(([A-Za-z_$][A-Za-z0-9_$]*)\(e,\{\.\.\.t\}\),!0\)/, "onRetry:()=>($1(e,t),!0)")
       .replace("({passGate:e,preparePreviousPage:t,prepareCurrentPage:n,startSession:r,isCurrent:i}){if(await e()){if(i&&!i())return;await t();if(i&&!i())return;n();if(i&&!i())return;return r()}}", "({passGate:e,preparePreviousPage:t,prepareCurrentPage:n,startSession:r}){if(await e())return await t(),n(),r()}");
     if (original.includes(marker)) return unchanged(source, "partial-patch");
@@ -3356,11 +3414,11 @@ function patchUserscriptHostLifecycleGuard(source) {
     return unchanged(source, reapplied.changed && reapplied.source === source ? "already-patched" : "partial-patch");
   }
 
-  const identifier = "[A-Za-z_$][A-Za-z0-9_$]*";
+  const identifier = JS_IDENTIFIER;
   const gateMatches = findPatternMatches(source, new RegExp("async function (" + identifier + ")\\(\\{passGate:e,preparePreviousPage:t,prepareCurrentPage:n,startSession:r(?:,isCurrent:i)?\\}\\)\\{"));
-  const parserMatches = findPatternMatches(source, new RegExp("function (" + identifier + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0\\}"));
-  const pageMatches = findPatternMatches(source, new RegExp("async function (" + identifier + ")\\(e,t\\)\\{let n=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"));
-  const contextMatches = findPatternMatches(source, /let n=await ([A-Za-z_$][A-Za-z0-9_$]*)\(e,t\),r;/);
+  const parserMatches = findPatternMatches(source, shape.parser);
+  const pageMatches = findPatternMatches(source, shape.page);
+  const contextMatches = findPatternMatches(source, shape.context);
   if ([gateMatches, parserMatches, pageMatches, contextMatches].some((matches) => matches.length === 0)) return unchanged(source, "anchor-not-found");
   if ([gateMatches, parserMatches, pageMatches, contextMatches].some((matches) => matches.length !== 1)) return unchanged(source, "ambiguous-anchor");
 
@@ -3396,9 +3454,9 @@ function patchUserscriptHostLifecycleGuard(source) {
   const page = pageMatches[0][1];
   if (!edits[1].text.includes(contextMatches[0][0]) || !edits[3].text.includes("=" + parser + "(t)") || !edits[3].text.includes("await " + gate + "({")) return unchanged(source, "ambiguous-anchor");
   const contextCall = contextMatches[0][0];
-  const invocation = findPatternMatches(edits[1].text, new RegExp("await " + identifier + "\\(\\\"translatePage\\\"\\)\\(n,\\{trigger:" + identifier + "\\(t\\),\\.\\.\\.r!==void 0\\?\\{documentTerminologyInput:r\\}:\\{\\}\\}\\)"));
-  const initialCheck = findPatternMatches(edits[3].text, /finally\{d=\(globalThis\.performance\?\.now\?\.\(\)\?\?Date\.now\(\)\)-b\}\}if\(!([A-Za-z_$][A-Za-z0-9_$]*)/);
-  const beforeGate = findPatternMatches(edits[3].text, new RegExp("if\\(" + identifier + "\\(o\\),await " + identifier + "\\(o,c,m\\)\\|\\|await " + identifier + "\\(o,m\\)\\)return;let p,f=await " + gate.replace(/\$/g, "\\$") + "\\(\\{"));
+  const invocation = findPatternMatches(edits[1].text, shape.invocation);
+  const initialCheck = findPatternMatches(edits[3].text, shape.initialCheck);
+  const beforeGate = findPatternMatches(edits[3].text, shape.beforeGate(gate));
   const restoreContext = findPatternMatches(edits[4].text, /let e=await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*\(\),\{\}\);/);
   if ([invocation, initialCheck, beforeGate, restoreContext].some((matches) => matches.length !== 1)) return unchanged(source, "anchor-not-found");
 
@@ -3420,22 +3478,18 @@ function patchUserscriptHostLifecycleGuard(source) {
     [1, contextCall,
       contextCall + "if(!__imtHostPolicy&&t?.__imtHostGeneration!==undefined||__imtHostPolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostPolicy||!__imtHostPolicy.active||__imtHostPolicy.generation!==__imtHostExpectedGeneration))return;"],
     [1, invocation[0][0], invocationPatched],
-    [2, "let{trigger:t,startedAt:n,documentTerminologyInput:r,...i}=e;return{state:Object.keys(i).length?i:void 0,trigger:t,startedAt:n,documentTerminologyInput:r}",
-      "let{trigger:t,startedAt:n,documentTerminologyInput:r,__imtHostGeneration:__imtHostGeneration,...i}=e;return{state:Object.keys(i).length?i:void 0,trigger:t,startedAt:n,documentTerminologyInput:r}"],
-    [3, 'let o=e,{state:a,trigger:s,startedAt:l,documentTerminologyInput:u}=' + parser + '(t),c=typeof s=="string"?s:"unknown";',
-      'let o=e,{state:a,trigger:s,startedAt:l,documentTerminologyInput:u}=B3t(t),c=typeof s=="string"?s:"unknown";let __imtHostPolicy=globalThis.__imtHostTranslationPolicy,__imtHostExpectedGeneration=t?.__imtHostGeneration??__imtHostPolicy?.generation,__imtHostCurrent=()=>!__imtHostPolicy?t?.__imtHostGeneration===undefined:globalThis.__imtHostTranslationPolicy===__imtHostPolicy&&__imtHostPolicy.active===!0&&__imtHostPolicy.generation===__imtHostExpectedGeneration;if(!__imtHostCurrent())return;'],
+    [2, shape.parserFields, shape.parserFieldsPatched],
+    [3, shape.pagePreamble(parser), shape.pagePreamble(parser) + guardPrologue],
     [3, initialCheck[0][0], initialCheck[0][0].replace("}}if(!", "}}if(!__imtHostCurrent())return;if(!")],
-    [3, '...u!==void 0?{documentTerminologyInput:u}:{}})};',
-      '...u!==void 0?{documentTerminologyInput:u}:{},...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}})};'],
+    [3, shape.recursionTail,
+      shape.recursionTail.replace("})};", ",...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}})};")],
     [3, 'onRetry:()=>(fo(e,t),!0)',
       'onRetry:()=>(' + page + '(e,{...t,...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}}),!0)'],
-    [3, beforeGate[0][0], beforeGate[0][0].replace("return;let p,f=await", "return;if(!__imtHostCurrent())return;let p,f=await").replace("({", "({isCurrent:__imtHostCurrent,")],
-    [3, "});if(!f)return;let h=f.session_id;",
-      "});if(!__imtHostCurrent()||!f)return;let h=f.session_id;"],
+    [3, beforeGate[0][0], beforeGate[0][0].replace(shape.beforeGateInsert[0], shape.beforeGateInsert[1]).replace("({", "({isCurrent:__imtHostCurrent,")],
+    [3, shape.gateResult[0], shape.gateResult[1]],
     [4, "async function " + restoreName + "(){", "async function " + restoreName + "(){let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;"],
     [4, restoreContext[0][0], restoreContext[0][0] + "if(__imtHostRestorePolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostRestorePolicy||__imtHostRestorePolicy.generation!==__imtHostRestoreGeneration))return;"],
   ];
-  replacements[5][2] = replacements[5][2].replace("=B3t(t)", "=" + parser + "(t)");
   replacements[8][1] = 'onRetry:()=>(' + page + '(e,t),!0)';
   for (const [index, oldText, newText] of replacements) {
     const failure = replaceInSection(index, oldText, newText);
@@ -3497,7 +3551,73 @@ const OFFICIAL_RUNTIME_URL = "https://download.immersivetranslate.com/immersive-
 const OFFICIAL_RUNTIME_RELEASE_BASE = "https://github.com/immersive-translate/immersive-translate/releases/download";
 const OFFICIAL_RUNTIME_RELEASE_TAG_PREFIX = "v";
 const RUNTIME_FILENAME = "userscript.runtime.js";
-const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.33.3";
+// The version the plugin installs when a user returns to a verified runtime.
+// It stays an explicit value: a version that is partly compatible must not
+// change what "install the verified version" restores.
+const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
+
+// Verified official-runtime compatibility declarations; see docs/RUNTIME.md.
+// One entry per official runtime version the plugin has verified, naming the
+// compatibility-patch profile that selects its anchor shape, the capabilities
+// the plugin may enable there, and the strongest evidence behind the entry.
+// An unregistered version resolves to `known: false` with no declared
+// capability; the anchor probes still run against that source, and every
+// capability that is enabled requires the declaration and the probe to agree.
+// RUNTIME_COMPAT_FAMILIES covers a patch-release family whose anchor shape was
+// verified on the listed versions: siblings inherit only the capabilities that
+// were confirmed to hold across the family, and each one still has to pass its
+// own anchor probe.
+const RUNTIME_COMPAT_MATRIX = [
+  {
+    version: "1.34.1",
+    profile: "1.34.x",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.33.3",
+    profile: "1.33.3",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.33.2",
+    profile: "1.33.2",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.32.10",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+  {
+    version: "1.32.9",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+  {
+    version: "1.32.8",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+];
+// Sibling patch releases of a verified family resolve through this entry.
+// Only the connection layer and the side-panel patch held across every 1.32.x
+// build that was probed; the legacy region bridge needs the exact anchors of
+// 1.32.8-1.32.10 and stays declared there.
+const RUNTIME_COMPAT_FAMILIES = [
+  {
+    family: "1.32.x",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: false, sidePanelWidth: true },
+  },
+];
+const RUNTIME_CAPABILITY_NAMES = ["hostContentBridge", "lifecycleGuard", "regionBridge", "sidePanelWidth"];
 const RUNTIME_VERSION_PATTERN = /^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const NUMERIC_IDENTIFIER_PATTERN = /^\d+$/;
 const METADATA_START_PATTERN = /^[ \t]*\/\/[ \t]*==UserScript==[ \t]*$/;
@@ -3576,15 +3696,61 @@ function extractRuntimeVersion(content) {
   return versions.length === 1 && isRuntimeVersion(versions[0]) ? versions[0] : "";
 }
 
+// Reads the declared version of a userscript. A complete metadata block is
+// authoritative; a bare `// @version` line is accepted for sources that only
+// carry the version comment (hand-written candidates and test fixtures).
+function readRuntimeVersion(content) {
+  const declared = extractRuntimeVersion(content);
+  if (declared) return declared;
+  if (typeof content !== "string") return "";
+  const match = /^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m.exec(content);
+  return match && isRuntimeVersion(match[1]) ? match[1] : "";
+}
+
+function runtimeVersionFamily(version) {
+  const parsed = parseRuntimeVersion(version);
+  if (!parsed || parsed.numbers.length < 2) return "";
+  return parsed.numbers[0] + "." + parsed.numbers[1] + ".x";
+}
+
+function noRuntimeCapabilities() {
+  const capabilities = {};
+  for (const name of RUNTIME_CAPABILITY_NAMES) capabilities[name] = false;
+  return capabilities;
+}
+
+// Resolves one official runtime version into its declared compatibility.
+// Callers enable an enhancement only when the declaration and the anchor probe
+// both allow it; an unregistered version never declares one.
+function resolveRuntimeCompatibility(version) {
+  const unresolved = { version: "", known: false, profile: "", evidence: "", capabilities: noRuntimeCapabilities() };
+  if (!isRuntimeVersion(version)) return unresolved;
+  const declared = RUNTIME_COMPAT_MATRIX.find((candidate) => candidate.version === version) ||
+    RUNTIME_COMPAT_FAMILIES.find((candidate) => candidate.family === runtimeVersionFamily(version));
+  if (!declared) return Object.assign({}, unresolved, { version });
+  return {
+    version,
+    known: true,
+    profile: declared.profile,
+    evidence: declared.evidence,
+    capabilities: Object.assign(noRuntimeCapabilities(), declared.capabilities),
+  };
+}
+
 module.exports = {
   OFFICIAL_RUNTIME_RELEASE_BASE,
   OFFICIAL_RUNTIME_URL,
+  RUNTIME_CAPABILITY_NAMES,
+  RUNTIME_COMPAT_FAMILIES,
+  RUNTIME_COMPAT_MATRIX,
   RUNTIME_FILENAME,
   SUPPORTED_OFFICIAL_RUNTIME_VERSION,
   compareRuntimeVersions,
   extractRuntimeVersion,
   isRuntimeVersion,
   officialRuntimeVersionUrl,
+  readRuntimeVersion,
+  resolveRuntimeCompatibility,
 };
 
 };
@@ -3732,13 +3898,15 @@ var IMTExtendedPlugin = (function () {
   var OFFICIAL_RUNTIME_URL = runtimeInstaller.OFFICIAL_RUNTIME_URL;
   var SUPPORTED_OFFICIAL_RUNTIME_VERSION = runtimeContract.SUPPORTED_OFFICIAL_RUNTIME_VERSION;
   var compareRuntimeVersions = runtimeContract.compareRuntimeVersions;
+  var resolveRuntimeCompatibility = runtimeContract.resolveRuntimeCompatibility;
+  var readRuntimeVersion = runtimeContract.readRuntimeVersion;
   var officialRuntimeVersionUrl = runtimeContract.officialRuntimeVersionUrl;
   var extractRuntimeVersion = runtimeInstaller.extractRuntimeVersion;
   var installRuntime = runtimeInstaller.installRuntime;
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
 
   var PLUGIN_ID = "immersive-translate-extended";
-  var PLUGIN_VERSION = "4.0.4";
+  var PLUGIN_VERSION = "4.0.5";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_BODY_BYTES = 8 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -4162,6 +4330,7 @@ var IMTExtendedPlugin = (function () {
     this._hostWindowUserscriptSource = "";
     this._hostWindowUserscriptBridgeReady = null;
     this._hostBridgeReady = null;
+    this._runtimeCompatibilityNoticeKey = "";
     this._configRestoreDepth = 0;
     this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
     this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
@@ -5475,8 +5644,8 @@ var IMTExtendedPlugin = (function () {
           return { ok: false, version: "" };
         }
         if (expectedVersion && version !== expectedVersion) {
-          pluginInstance._setRuntimeInstallPhase("", "脚本版本与已核验版本不一致");
-          new obsidian.Notice("翻译运行时安装失败：下载到的脚本版本 v" + version + " 与已核验版本 v" + expectedVersion + " 不一致");
+          pluginInstance._setRuntimeInstallPhase("", "脚本版本与已验证版本不一致");
+          new obsidian.Notice("翻译运行时安装失败：下载的脚本版本 v" + version + " 与已验证版本 v" + expectedVersion + " 不一致");
           return { ok: false, version: "" };
         }
         var dir = pluginInstance._getPluginDir();
@@ -5544,7 +5713,7 @@ var IMTExtendedPlugin = (function () {
     var supportedVersion = SUPPORTED_OFFICIAL_RUNTIME_VERSION;
     var url = officialRuntimeVersionUrl(supportedVersion);
     if (!url) {
-      new obsidian.Notice("翻译运行时安装失败：已核验版本号无效");
+      new obsidian.Notice("翻译运行时安装失败：已验证版本号无效");
       return Promise.resolve({ ok: false, version: "" });
     }
     return this._installRuntimeFromUrl({ url: url, expectedVersion: supportedVersion });
@@ -6799,6 +6968,7 @@ var IMTExtendedPlugin = (function () {
     if ((type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE || type === OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE) && !this._isHostBridgeReady(runtimeWindow)) {
       return Promise.resolve(false);
     }
+    if (type === OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE && !this._isHostTargetLanguageSyncReady(runtimeWindow)) return Promise.resolve(false);
     if (type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE && !this._isHostRegionBridgeReady(runtimeWindow)) return Promise.resolve(false);
     if (runtimeWindow !== window && (type === OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE || type === OBSIDIAN_HOST_TRANSLATE_REGIONS_MESSAGE)) {
       var policy = this._updateHostWindowTranslationPolicy(runtimeWindow, this._getActiveTranslationState(window));
@@ -7202,6 +7372,61 @@ var IMTExtendedPlugin = (function () {
     // the target window. A live child with unknown capability stays unknown so
     // automatic host-bridge work stays gated.
     return false;
+  };
+
+  // Target-language hot sync is an automatic behaviour: it requires the loaded
+  // runtime version to be declared in the compatibility matrix as well as the
+  // anchor probe to confirm the content bridge, so an unverified runtime keeps
+  // the explicitly requested translation path without silently rewriting its
+  // language configuration. The decision follows the version the window is
+  // actually running: after a plugin reload the script on disk may already be
+  // the verified version while the surviving engine is still an unverified one.
+  IMTExtendedPluginClass.prototype._isHostTargetLanguageSyncReady = function (targetWindow) {
+    var runtimeWindow = targetWindow || window;
+    if (!this._isHostBridgeReady(runtimeWindow)) return false;
+    return resolveRuntimeCompatibility(this._loadedEngineVersion(runtimeWindow)).capabilities.hostContentBridge === true;
+  };
+
+  // One plain-language summary per runtime version about what the compatibility
+  // declaration and the anchor probes leave enabled. Capabilities an entry
+  // declares false (for example the 1.32.x lifecycle guard) are a limitation of
+  // that version; an unregistered version has simply not been verified here.
+  IMTExtendedPluginClass.prototype._buildRuntimeCompatibilityNotice = function (compatibility, readiness) {
+    var connectionReady = readiness.hostContentBridge === true;
+    var windowFeatures = [];
+    if (readiness.lifecycleGuard !== true || compatibility.capabilities.lifecycleGuard !== true) windowFeatures.push("自动翻译");
+    if (readiness.regionBridge !== true || compatibility.capabilities.regionBridge !== true) windowFeatures.push("局部重译");
+    var unavailable = [];
+    if (!connectionReady) unavailable.push("Dashboard 设置同步");
+    if (windowFeatures.length > 0) unavailable.push("设置窗口的" + windowFeatures.join("与"));
+    if (unavailable.length === 0) return "";
+    // With interface translation off only the window features are left, and
+    // none of them would run anyway.
+    if (connectionReady && !this.settings.uiTranslateEnabled) return "";
+    var version = compatibility.version ? "v" + compatibility.version : "";
+    var featureText = unavailable.join("、");
+    var closedText = (unavailable.length > 1 ? "均已关闭" : "已关闭") + (connectionReady ? "" : "；语言和翻译服务请在悬浮球中确认");
+    var restore = "可在插件设置中安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION + " 并重启 Obsidian，或等待插件更新";
+    if (!compatibility.known) {
+      return "本插件尚未验证翻译运行时 " + (version || "当前版本") + "，" + featureText + closedText + "。" + restore + "。";
+    }
+    var declaredButBroken = (readiness.lifecycleGuard !== true && compatibility.capabilities.lifecycleGuard === true) ||
+      (readiness.regionBridge !== true && compatibility.capabilities.regionBridge === true) ||
+      (!connectionReady && compatibility.capabilities.hostContentBridge === true);
+    if (declaredButBroken) {
+      return "翻译运行时 " + version + " 的内容与本插件已验证的版本不一致，" + featureText + closedText + "。可在插件设置中重新安装运行时，或更新插件。";
+    }
+    return "翻译运行时 " + version + " 不支持" + featureText + "。" +
+      (unavailable.length > 1 ? "如需这些功能，" : "如需该功能，") + restore + "。";
+  };
+
+  IMTExtendedPluginClass.prototype._notifyRuntimeCompatibility = function (compatibility, readiness) {
+    var notice = this._buildRuntimeCompatibilityNotice(compatibility, readiness);
+    if (!notice) return false;
+    if (this._runtimeCompatibilityNoticeKey === notice) return false;
+    this._runtimeCompatibilityNoticeKey = notice;
+    new obsidian.Notice(notice);
+    return true;
   };
 
   IMTExtendedPluginClass.prototype._syncHostWindowTranslationState = function () {
@@ -7698,30 +7923,34 @@ var IMTExtendedPlugin = (function () {
       new obsidian.Notice("请在插件设置中安装翻译运行时");
       return false;
     }
+    // A capability is enabled only where the compatibility matrix declares it
+    // and the anchor probes below still confirm the source's structure.
+    var scriptCompatibility = resolveRuntimeCompatibility(readRuntimeVersion(scriptContent));
+    var capabilityDeclared = function (name) { return scriptCompatibility.capabilities[name] === true; };
     var compatibilityPatch = patchUserscriptSidePanelMinWidth(scriptContent, OBSIDIAN_MOCK_SIDE_PANEL_MIN_WIDTH);
-    scriptContent = compatibilityPatch.source;
-    if (!compatibilityPatch.changed && compatibilityPatch.reason !== "already-patched" && compatibilityPatch.reason !== "anchor-not-found") {
-      console.warn("[IMT-Extended] Userscript side-panel compatibility patch skipped: " + compatibilityPatch.reason);
+    if (capabilityDeclared("sidePanelWidth")) {
+      scriptContent = compatibilityPatch.source;
+      if (!compatibilityPatch.changed && compatibilityPatch.reason !== "already-patched" && compatibilityPatch.reason !== "anchor-not-found") {
+        console.warn("[IMT-Extended] Userscript side-panel compatibility patch skipped: " + compatibilityPatch.reason);
+      }
     }
     var hostBridgePatch = patchUserscriptHostContentBridge(scriptContent);
     scriptContent = hostBridgePatch.source;
     var hostBridgeReady = hostBridgePatch.changed || hostBridgePatch.reason === "already-patched";
     var lifecyclePatch = patchUserscriptHostLifecycleGuard(scriptContent);
     scriptContent = lifecyclePatch.source;
-    var lifecycleReady = lifecyclePatch.changed || lifecyclePatch.reason === "already-patched";
+    var lifecycleReady = capabilityDeclared("lifecycleGuard") && (lifecyclePatch.changed || lifecyclePatch.reason === "already-patched");
     var regionPatch = patchUserscriptHostRegionBridge(scriptContent);
     scriptContent = regionPatch.source;
-    this._hostWindowRegionBridgeReady = regionPatch.changed || regionPatch.reason === "already-patched";
-    if (hostBridgeReady && !this._hostWindowRegionBridgeReady && this.settings.uiTranslateEnabled) {
-      new obsidian.Notice("当前运行时不支持设置窗口的增量补译，请更新运行时并重新打开设置窗口。");
-    }
-    if (hostBridgeReady && !lifecycleReady && this.settings.uiTranslateEnabled) {
-      new obsidian.Notice("当前运行时暂不支持设置窗口的安全自动翻译，请更新运行时并重新打开设置窗口。");
-    }
+    this._hostWindowRegionBridgeReady = capabilityDeclared("regionBridge") && (regionPatch.changed || regionPatch.reason === "already-patched");
     if (!hostBridgeReady) {
       console.warn("[IMT-Extended] Userscript host-content compatibility patch skipped: " + hostBridgePatch.reason);
-      new obsidian.Notice("当前沉浸式翻译运行时暂不支持 Dashboard 热同步；语言和翻译服务请在悬浮球中确认。");
     }
+    this._notifyRuntimeCompatibility(scriptCompatibility, {
+      hostContentBridge: hostBridgeReady,
+      lifecycleGuard: lifecycleReady,
+      regionBridge: this._hostWindowRegionBridgeReady,
+    });
     this._hostWindowUserscriptBridgeReady = hostBridgeReady && lifecycleReady;
     if (!this._isEngineLoaded()) {
       this._hostBridgeReady = hostBridgeReady;
@@ -7823,14 +8052,19 @@ var IMTExtendedPlugin = (function () {
     var latestRelation = runtimeStatus.latestVersion ? compareRuntimeVersions(runtimeStatus.latestVersion, supportedVersion) : null;
     var installedIsCurrent = runtimeStatus.installed && !!runtimeStatus.latestVersion &&
       compareRuntimeVersions(runtimeStatus.version, runtimeStatus.latestVersion) === 0;
+    // A version is "verified" when the compatibility matrix registers it; the
+    // pinned fallback only names the version the plugin installs on request.
+    var installedIsVerified = runtimeStatus.installed && resolveRuntimeCompatibility(runtimeStatus.version).known;
+    var latestIsVerified = !!runtimeStatus.latestVersion && resolveRuntimeCompatibility(runtimeStatus.latestVersion).known;
     var runtimeDescription = runtimeStatus.installed ? "本机已安装 v" + runtimeStatus.version : "本机尚未安装";
     if (runtimeStatus.loadedVersion && runtimeStatus.loadedVersion !== runtimeStatus.version) {
       runtimeDescription += "；当前已加载 v" + runtimeStatus.loadedVersion;
     }
     if (runtimeStatus.restartRequired) runtimeDescription += "，重启后使用磁盘版本";
-    runtimeDescription += "；本插件已核验适配到 v" + supportedVersion;
-    if (installedRelation !== null && installedRelation > 0) runtimeDescription += "，本机版本高于该范围";
-    else if (installedRelation !== null && installedRelation < 0) runtimeDescription += "，本机版本低于该范围";
+    runtimeDescription += installedIsVerified ? "，该版本已验证"
+      : "；本插件已验证的版本为 v" + supportedVersion;
+    if (!installedIsVerified && installedRelation !== null && installedRelation > 0) runtimeDescription += "，本机版本高于该版本";
+    else if (!installedIsVerified && installedRelation !== null && installedRelation < 0) runtimeDescription += "，本机版本低于该版本";
     if (installing) {
       var phaseText = runtimeStatus.installPhase === "checking" ? "正在检查官方运行时…"
         : runtimeStatus.installPhase === "downloading" ? "正在下载官方运行时…"
@@ -7843,7 +8077,7 @@ var IMTExtendedPlugin = (function () {
     else if (runtimeStatus.latestState === "error") runtimeDescription += "；暂时无法获取官方当前版本";
     else if (runtimeStatus.latestVersion) {
       runtimeDescription += "；官方当前版本 v" + runtimeStatus.latestVersion;
-      if (latestRelation !== null && latestRelation > 0) runtimeDescription += "（尚未核验适配）";
+      if (!latestIsVerified) runtimeDescription += "（本插件尚未验证）";
       if (installedIsCurrent) runtimeDescription += "，本机已是当前版本";
     }
     else runtimeDescription += "；即将检查官方当前版本";
@@ -7864,9 +8098,9 @@ var IMTExtendedPlugin = (function () {
         });
       });
     }).addButton(function (b) {
-      b.setButtonText(installing ? "正在安装已核验版本…"
-        : supportedIsInstalled ? "已安装已核验版本 v" + supportedVersion
-        : "安装已核验版本 v" + supportedVersion);
+      b.setButtonText(installing ? "正在安装已验证版本…"
+        : supportedIsInstalled ? "已验证版本 v" + supportedVersion + " 已安装"
+        : "安装已验证版本 v" + supportedVersion);
       if (typeof b.setDisabled === "function") b.setDisabled(!!supportedIsInstalled || installing);
       if (supportedIsInstalled || installing || typeof b.onClick !== "function") return;
       b.onClick(function () {
@@ -7876,18 +8110,18 @@ var IMTExtendedPlugin = (function () {
         });
       });
     });
-    var installedBeyondVerified = installedRelation !== null && installedRelation > 0;
-    var officialBeyondVerified = latestRelation !== null && latestRelation > 0;
+    var installedBeyondVerified = runtimeStatus.installed && !installedIsVerified;
+    var officialBeyondVerified = !!runtimeStatus.latestVersion && !latestIsVerified;
     if (installedBeyondVerified) {
       containerEl.createDiv({
         cls: "imt-runtime-support-note",
-        text: "本机运行时 v" + runtimeStatus.version + " 高于已核验适配版本 v" + supportedVersion + "：宿主弹窗自动翻译与区域增量补译按已核验版本核验，超出范围时会暂停；可安装已核验版本并重启 Obsidian 恢复。",
+        text: "本机运行时 v" + runtimeStatus.version + " 本插件尚未验证，设置窗口的自动翻译与局部重译按该版本关闭。安装已验证版本 v" + supportedVersion + " 并重启 Obsidian 即可恢复。",
       });
     }
     if (officialBeyondVerified) {
       containerEl.createDiv({
         cls: "imt-runtime-support-note",
-        text: "官方当前版本 v" + runtimeStatus.latestVersion + " 尚未核验适配：本插件按已核验适配版本 v" + supportedVersion + " 核验宿主弹窗自动翻译与区域增量补译，更新到该官方版本会暂停这些增强。",
+        text: "官方当前版本本插件尚未验证；更新到该版本后，设置窗口的自动翻译与局部重译将关闭。",
       });
     }
     if (installing) {

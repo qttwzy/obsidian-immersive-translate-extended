@@ -258,7 +258,7 @@ return module.exports;
   } catch (e) { return; }
   var P = "imt-gm-";
   var BRIDGE_META_NAME = "immersive-translate-meta";
-  var BRIDGE_VERSION = "4.0.4";
+  var BRIDGE_VERSION = "4.0.5";
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
   var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
   // A logout can race an in-flight Dashboard request; invalidate captures when identity data is removed.

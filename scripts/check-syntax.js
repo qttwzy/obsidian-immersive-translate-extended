@@ -18,6 +18,7 @@ const FILES = [
   "plugin/sync-protocol.js",
   "plugin/translation-state.js",
   "scripts/build-plugin.js",
+  "scripts/check-runtime-compat.js",
   "scripts/check-syntax.js",
   "scripts/package-plugin.js",
 ];

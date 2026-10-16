@@ -1,6 +1,6 @@
 {
   "name": "obsidian-immersive-translate-extended",
-  "version": "4.0.4",
+  "version": "4.0.5",
   "private": true,
   "description": "Immersive Translate Extended Obsidian plugin",
   "main": "plugin/main.js",
@@ -10,6 +10,7 @@
   "scripts": {
     "build": "node scripts/build-plugin.js",
     "check:build": "node scripts/build-plugin.js --check",
+    "check:runtime-compat": "node scripts/check-runtime-compat.js",
     "check:syntax": "node scripts/check-syntax.js",
     "test": "npm run check:build && node --test \"tests/*.test.js\"",
     "quality": "npm run check:syntax && npm test",

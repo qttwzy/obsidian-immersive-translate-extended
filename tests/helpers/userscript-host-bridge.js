@@ -48,19 +48,48 @@ async function _De(){}
 `;
 }
 
+const REGION_FIXTURE_SHAPES = {
+  "1.33.2": { wrapper: "w9", traverser: "Ap", timer: "bp", marks: "ur", stopped: "Yr", engine: "Ve", context: "Ci", entry: "Yr()" },
+  "1.33.3": { wrapper: "A9", traverser: "Mp", timer: "Tp", marks: "ur", stopped: "Yr", engine: "Ve", context: "Ci", entry: "Yr()" },
+  "1.34.1": { wrapper: "$M", traverser: "Of", timer: "pf", marks: "sr", stopped: "ei", engine: "He", context: "Di", entry: "ei()||n?.shouldContinue?.()===!1" },
+};
+
 function hostRegionBridgeFixture(version = "1.33.2") {
-  const wrapper = version === "1.33.2" ? "w9" : "A9";
-  const traverser = version === "1.33.2" ? "Ap" : "Mp";
-  const timer = version === "1.33.2" ? "bp" : "Tp";
+  const shape = REGION_FIXTURE_SHAPES[version] || REGION_FIXTURE_SHAPES["1.33.2"];
+  const { wrapper, traverser, timer, marks, stopped, engine, context, entry } = shape;
   return `// @version ${version}
-const document=controls.document,globalThis=controls.globalObject,ur=controls.ur,Yr=controls.Yr;
-let Ve=controls.engine;
-const Ci=()=>({}),${timer}=async(_name,callback)=>await callback();
+const document=controls.document,globalThis=controls.globalObject,${marks}=controls.ur,${stopped}=controls.Yr;
+let ${engine}=controls.engine;
+const ${context}=()=>({}),${timer}=async(_name,callback)=>await callback();
 function ${traverser}(request){return controls.scan(request)}
-if(Ve){Ve.traverseContent=${traverser},Ve.walkContainer=${traverser}}
-async function ${wrapper}(e,t,n,r){if(Yr())return;let i=Ci(e.ctx);await ${timer}("initial_traverse_ms",()=>e.traverseContent({id:e.id,container:t,filterRule:i,performancePhase:r,onParagraph:async o=>{if(n?.shouldParseParagraph&&!n.shouldParseParagraph(o).shouldParse){n.onParsed?.(null);return}n?.onParsed?.(o??null);await controls.onParagraph?.(o)},engineCtx:e}))}
+if(${engine}){${engine}.traverseContent=${traverser},${engine}.walkContainer=${traverser}}
+async function ${wrapper}(e,t,n,r){if(${entry})return;let i=${context}(e.ctx);await ${timer}("initial_traverse_ms",()=>e.traverseContent({id:e.id,container:t,filterRule:i,performancePhase:r,onParagraph:async o=>{if(n?.shouldParseParagraph&&!n.shouldParseParagraph(o).shouldParse){n.onParsed?.(null);return}n?.onParsed?.(o??null);await controls.onParagraph?.(o)},engineCtx:e}))}
 /* __imtHostLifecycleGuardV1 */
 async function hostHandler(e,t){const calls=[],r=e,Ae=async()=>({ok:true}),E1t=async()=>{},td=()=>{};let i;try{let o=JSON.parse(typeof t==="string"?t:t.detail||"{}");if(o&&o.type){if(o.type==="noop"){}else if(o.type==="translatePage")await E1t(r,o.data);else if(o.type==="getAsyncTranslationServiceList"){}else if(o.type==="switchTranslationMode"){}else Ae("content",o.type);i!==void 0&&o.id&&td(o.type,i,o.id)}}catch(error){throw error}return i}
+`;
+}
+
+// Reduced executable copy of the 1.34.1 bSt -> vo -> Yme call shape.
+function actual1341HostLifecycleFixture() {
+  return `// @version 1.34.1
+const events=controls.events;
+const H7e=controls.R9e,Kt=controls.Yt,Vn=()=>"test:";
+const _t=()=>"Translated",oE=()=>undefined;
+const rxe=()=>true,nQ=()=>{},FIe=async()=>false,UIe=async()=>false;
+const Ta=()=>"retry",Jo=()=>({dispose(){}}),fo=async()=>({allowed:true}),iRe=async()=>true,rRe=async()=>false,aRe=()=>{};
+const jme=()=>{events.push("startSession");controls.onStartSession?.();return{session_id:"session"}};
+const hQ=t=>t?.trigger;
+const Xa=name=>name==="translatePage"?vo:()=>{};
+function gwt(e){if(!e)return{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0,enableObserver:void 0};let{trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i,...o}=e;return{state:Object.keys(o).length?o:void 0,trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i}}
+function Zn(){return "test:"}
+async function bSt(e,t){let n=t?.enableObserver===!1?oE():void 0;try{let r=await H7e(e,t),i;return await Xa("translatePage")(r,{trigger:hQ(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}}),r}finally{n?.()}}
+function Pd(){}
+async function Yme({passGate:e,preparePreviousPage:t,prepareCurrentPage:n,startSession:r}){if(await e())return await t(),n(),r()}
+function D1(){return globalThis.performance?.now?.()??Date.now()}
+async function Zu(){let e=await Kt(Vn(),{});controls.onRestore?.()}
+function vwt(){}
+async function vo(e,t){let n=t?.enableObserver===!1?oE():void 0;try{let r=globalThis.performance?.now?.()??Date.now(),i=Date.now(),o=globalThis.self===globalThis.top;let a=e,{state:s,trigger:l,startedAt:u,documentTerminologyInput:c,enableObserver:g}=gwt(t),d=typeof l=="string"?l:"unknown";let p;if(s){let v=globalThis.performance?.now?.()??Date.now();try{a=await Kt(Vn(),s)}finally{p=(globalThis.performance?.now?.()??Date.now())-v}}if(!rxe(a.translationService,a.targetLanguage,a.config))return;let f=v=>{vo(e,{...s,...v,...l?{trigger:l}:{},...u?{startedAt:u}:{},...c!==void 0?{documentTerminologyInput:c}:{},...g===!1?{enableObserver:!1}:{}})};if(nQ(a),await FIe(a,d,f)||await UIe(a,f))return;let h,b=await Yme({passGate:async()=>{let v=Ta(),S=Jo({retryId:v,onRetry:()=>(vo(e,t),!0)});return(await controls.ao({})).allowed?(S.dispose(),await iRe(a)&&!await rRe(a)?(aRe(a),!1):!0):!1},preparePreviousPage:async()=>{_t()!=="Original"&&await Zu()},prepareCurrentPage:()=>{events.push("prepareCurrentPage")},startSession:()=>jme(a,{trigger:d})});if(!b)return;let y=b.session_id;events.push("session");return b}finally{n?.()}}
+function FRe(){}
 `;
 }
 
@@ -86,6 +115,7 @@ module.exports = {
   actual1328HostBridgeFixture,
   actual1332HostBridgeFixture,
   actual1332HostLifecycleFixture,
+  actual1341HostLifecycleFixture,
   legacyHostRegionBridgeFixture,
   hostRegionBridgeFixture,
   renamedTransportHostBridgeFixture,

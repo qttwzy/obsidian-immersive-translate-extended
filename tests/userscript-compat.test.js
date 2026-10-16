@@ -17,6 +17,7 @@ const {
   actual1328HostBridgeFixture,
   actual1332HostBridgeFixture,
   actual1332HostLifecycleFixture,
+  actual1341HostLifecycleFixture,
   hostBridgeFixture,
   hostRegionBridgeFixture,
   legacyHostRegionBridgeFixture,
@@ -41,8 +42,9 @@ function lifecycleHarness(overrides = {}, source = actual1332HostLifecycleFixtur
   };
   const result = patchUserscriptHostLifecycleGuard(source);
   assert.equal(result.changed, true);
-  const { k1t, fo } = new Function("controls", result.source + "\nreturn {k1t,fo};")(controls);
-  return { events, k1t, fo, result };
+  const names = /^\/\/ @version 1\.34\./.test(source) ? ["bSt", "vo"] : ["k1t", "fo"];
+  const runtime = new Function("controls", result.source + "\nreturn {" + names.join(",") + "};")(controls);
+  return { events, handler: runtime[names[0]], page: runtime[names[1]], k1t: runtime[names[0]], fo: runtime[names[1]], result };
 }
 
 function regionHarness(version = "1.33.2", overrides = {}) {
@@ -503,7 +505,7 @@ test("an old asynchronous previous-page restore cannot clear a reopened child se
   } finally { delete globalThis.__imtHostTranslationPolicy; }
 });
 
-for (const version of ["1.33.2", "1.33.3"]) {
+for (const version of ["1.33.2", "1.33.3", "1.34.1"]) {
   test(`region bridge ${version} scans only a new subtree and leaves old translation in place`, async () => {
     const h = regionHarness(version);
     const root = h.element(null, { marked: true });
@@ -525,6 +527,34 @@ for (const version of ["1.33.2", "1.33.3"]) {
   });
 }
 
+test("lifecycle guard stops a stale 1.34.1 page session after the gate resumes", async () => {
+  const gate = deferred();
+  const policy = { active: true, generation: 3 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise }, actual1341HostLifecycleFixture());
+    const task = h.page({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host" });
+    await Promise.resolve();
+    policy.active = false;
+    policy.generation++;
+    gate.resolve({ allowed: true });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("the 1.34.1 lifecycle guard keeps its generation through the handler invocation", async () => {
+  const policy = { active: true, generation: 5 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({}, actual1341HostLifecycleFixture());
+    const context = await h.handler({ url: "https://example.com" }, { trigger: "host", __imtHostGeneration: 5 });
+    assert.equal(context.url, "https://example.com");
+    assert.equal(h.result.source.includes("__imtHostLifecycleGuardV1"), true);
+    assert.deepEqual(patchUserscriptHostLifecycleGuard(h.result.source), { source: h.result.source, changed: false, reason: "already-patched" });
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
 test("legacy 1.32.10 host runtime accepts the regional bridge patch", () => {
   const source = legacyHostRegionBridgeFixture();
   const withContent = patchUserscriptHostContentBridge(source);
@@ -535,6 +565,30 @@ test("legacy 1.32.10 host runtime accepts the regional bridge patch", () => {
   assert.equal((patched.source.match(/__imtHostRegionBridgeV1/g) || []).length, 1);
   assert.doesNotThrow(() => new Function(patched.source));
   assert.deepEqual(patchUserscriptHostRegionBridge(patched.source), { source: patched.source, changed: false, reason: "already-patched" });
+});
+
+test("the compatibility declaration keeps the legacy profile across the verified 1.32.x family", () => {
+  const source = patchUserscriptHostContentBridge(legacyHostRegionBridgeFixture()).source;
+  const sibling = source.replace("// @version 1.32.10", "// @version 1.32.9");
+  assert.equal(patchUserscriptHostRegionBridge(sibling).reason, "patched");
+  const unregistered = source.replace("// @version 1.32.10", "// @version 1.35.0");
+  assert.deepEqual(patchUserscriptHostRegionBridge(unregistered), { source: unregistered, changed: false, reason: "unsupported-version" });
+});
+
+test("the compatibility declaration gates the 1.33.x region and lifecycle patches", () => {
+  const regionSource = patchUserscriptHostContentBridge(hostRegionBridgeFixture("1.33.3")).source;
+  const unregisteredRegion = regionSource.replace("// @version 1.33.3", "// @version 1.35.0");
+  assert.deepEqual(patchUserscriptHostRegionBridge(unregisteredRegion), { source: unregisteredRegion, changed: false, reason: "unsupported-version" });
+
+  const lifecycleSource = actual1332HostLifecycleFixture().replace("1.33.2", "1.33.3");
+  const unregisteredLifecycle = lifecycleSource.replace("// @version 1.33.3", "// @version 1.35.0");
+  assert.deepEqual(patchUserscriptHostLifecycleGuard(unregisteredLifecycle), { source: unregisteredLifecycle, changed: false, reason: "unsupported-version" });
+});
+
+test("a version inside a complete metadata block selects the same profile as a bare version line", () => {
+  const bare = patchUserscriptHostContentBridge(legacyHostRegionBridgeFixture()).source;
+  const bracketed = "// ==UserScript==\n" + bare + "\n// ==/UserScript==\n";
+  assert.equal(patchUserscriptHostRegionBridge(bracketed).reason, "patched");
 });
 
 test("region bridge rejects unknown IDs, selectors, and an unavailable engine", async () => {

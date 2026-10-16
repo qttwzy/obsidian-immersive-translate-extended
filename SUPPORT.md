@@ -4,12 +4,14 @@
 
 The 4.0.x public beta supports Obsidian Desktop 1.12.7 or newer, Markdown Reading View translation, interface translation in host popout windows such as Settings and the community plugin or theme browsers, and the official PDF/document translation workspace. Plugin settings show the locally installed runtime and current official version, with install and update actions from the official source.
 
+Automatic translation and partial re-translation in Settings and other host windows require an official runtime version this plugin has verified. Verified runtime versions are 1.34.1 (the current fallback), 1.33.2, 1.33.3, and the 1.32.x line (1.32.8, 1.32.9, 1.32.10 were probed). A newer official runtime disables those features; the plugin reports this once at startup and in its settings, and the verified runtime can be installed from there.
+
 Vault PDFs expose a languages action in the active PDF view and attempt a controlled handoff to the isolated official workspace. Other supported documents use manual file selection in that workspace. Linux is outside the first beta acceptance matrix.
 
 ## Before opening an issue
 
 1. Confirm the plugin was installed from a complete Pre-release ZIP.
-2. Open plugin settings and confirm that “翻译运行时” shows both the local status and current official version; use its install or update button if needed.
+2. Open plugin settings and check that “翻译运行时” lists the local runtime, the current official version, and the version this plugin has verified. If a notice reported closed features, use the install, update, or verified-version button there.
 3. Reproduce in the relevant Markdown Reading View, host popout window, or active PDF view on the latest published beta. For a missing PDF action, reload Obsidian or disable and re-enable the plugin after replacing its files. For an untranslated Settings or community browser window, confirm UI translation is enabled, keep the main window in bilingual or translation-only mode, then close and reopen that window.
 4. Restart Obsidian and test with overlapping translation plugins kept inactive when that is safe for your Vault.
 5. Check the release notes and existing issues for the same behavior.

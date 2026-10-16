@@ -4,7 +4,73 @@ const OFFICIAL_RUNTIME_URL = "https://download.immersivetranslate.com/immersive-
 const OFFICIAL_RUNTIME_RELEASE_BASE = "https://github.com/immersive-translate/immersive-translate/releases/download";
 const OFFICIAL_RUNTIME_RELEASE_TAG_PREFIX = "v";
 const RUNTIME_FILENAME = "userscript.runtime.js";
-const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.33.3";
+// The version the plugin installs when a user returns to a verified runtime.
+// It stays an explicit value: a version that is partly compatible must not
+// change what "install the verified version" restores.
+const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
+
+// Verified official-runtime compatibility declarations; see docs/RUNTIME.md.
+// One entry per official runtime version the plugin has verified, naming the
+// compatibility-patch profile that selects its anchor shape, the capabilities
+// the plugin may enable there, and the strongest evidence behind the entry.
+// An unregistered version resolves to `known: false` with no declared
+// capability; the anchor probes still run against that source, and every
+// capability that is enabled requires the declaration and the probe to agree.
+// RUNTIME_COMPAT_FAMILIES covers a patch-release family whose anchor shape was
+// verified on the listed versions: siblings inherit only the capabilities that
+// were confirmed to hold across the family, and each one still has to pass its
+// own anchor probe.
+const RUNTIME_COMPAT_MATRIX = [
+  {
+    version: "1.34.1",
+    profile: "1.34.x",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.33.3",
+    profile: "1.33.3",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.33.2",
+    profile: "1.33.2",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
+    version: "1.32.10",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+  {
+    version: "1.32.9",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+  {
+    version: "1.32.8",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: true, sidePanelWidth: true },
+  },
+];
+// Sibling patch releases of a verified family resolve through this entry.
+// Only the connection layer and the side-panel patch held across every 1.32.x
+// build that was probed; the legacy region bridge needs the exact anchors of
+// 1.32.8-1.32.10 and stays declared there.
+const RUNTIME_COMPAT_FAMILIES = [
+  {
+    family: "1.32.x",
+    profile: "1.32.x",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: false, regionBridge: false, sidePanelWidth: true },
+  },
+];
+const RUNTIME_CAPABILITY_NAMES = ["hostContentBridge", "lifecycleGuard", "regionBridge", "sidePanelWidth"];
 const RUNTIME_VERSION_PATTERN = /^\d+(?:\.\d+){1,3}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const NUMERIC_IDENTIFIER_PATTERN = /^\d+$/;
 const METADATA_START_PATTERN = /^[ \t]*\/\/[ \t]*==UserScript==[ \t]*$/;
@@ -83,13 +149,59 @@ function extractRuntimeVersion(content) {
   return versions.length === 1 && isRuntimeVersion(versions[0]) ? versions[0] : "";
 }
 
+// Reads the declared version of a userscript. A complete metadata block is
+// authoritative; a bare `// @version` line is accepted for sources that only
+// carry the version comment (hand-written candidates and test fixtures).
+function readRuntimeVersion(content) {
+  const declared = extractRuntimeVersion(content);
+  if (declared) return declared;
+  if (typeof content !== "string") return "";
+  const match = /^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m.exec(content);
+  return match && isRuntimeVersion(match[1]) ? match[1] : "";
+}
+
+function runtimeVersionFamily(version) {
+  const parsed = parseRuntimeVersion(version);
+  if (!parsed || parsed.numbers.length < 2) return "";
+  return parsed.numbers[0] + "." + parsed.numbers[1] + ".x";
+}
+
+function noRuntimeCapabilities() {
+  const capabilities = {};
+  for (const name of RUNTIME_CAPABILITY_NAMES) capabilities[name] = false;
+  return capabilities;
+}
+
+// Resolves one official runtime version into its declared compatibility.
+// Callers enable an enhancement only when the declaration and the anchor probe
+// both allow it; an unregistered version never declares one.
+function resolveRuntimeCompatibility(version) {
+  const unresolved = { version: "", known: false, profile: "", evidence: "", capabilities: noRuntimeCapabilities() };
+  if (!isRuntimeVersion(version)) return unresolved;
+  const declared = RUNTIME_COMPAT_MATRIX.find((candidate) => candidate.version === version) ||
+    RUNTIME_COMPAT_FAMILIES.find((candidate) => candidate.family === runtimeVersionFamily(version));
+  if (!declared) return Object.assign({}, unresolved, { version });
+  return {
+    version,
+    known: true,
+    profile: declared.profile,
+    evidence: declared.evidence,
+    capabilities: Object.assign(noRuntimeCapabilities(), declared.capabilities),
+  };
+}
+
 module.exports = {
   OFFICIAL_RUNTIME_RELEASE_BASE,
   OFFICIAL_RUNTIME_URL,
+  RUNTIME_CAPABILITY_NAMES,
+  RUNTIME_COMPAT_FAMILIES,
+  RUNTIME_COMPAT_MATRIX,
   RUNTIME_FILENAME,
   SUPPORTED_OFFICIAL_RUNTIME_VERSION,
   compareRuntimeVersions,
   extractRuntimeVersion,
   isRuntimeVersion,
   officialRuntimeVersionUrl,
+  readRuntimeVersion,
+  resolveRuntimeCompatibility,
 };

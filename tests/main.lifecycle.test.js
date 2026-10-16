@@ -30,7 +30,11 @@ const {
   OFFICIAL_RUNTIME_URL,
   SUPPORTED_OFFICIAL_RUNTIME_VERSION,
   officialRuntimeVersionUrl,
+  resolveRuntimeCompatibility,
 } = require("../plugin/runtime-contract");
+const {
+  OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE,
+} = require("../plugin/userscript-compat");
 
 const VERIFIED_RUNTIME_SOURCE = "// ==UserScript==\n// @version " + SUPPORTED_OFFICIAL_RUNTIME_VERSION + "\n// ==/UserScript==\nwindow.__imtRuntime = 'verified';\n";
 
@@ -771,9 +775,9 @@ test("settings show the verified runtime version and install it on demand", asyn
     tab.display();
     const initialText = collectText(tab.containerEl);
     assert.match(initialText, /本机已安装 v9\.7\.3/);
-    assert.ok(initialText.includes("本插件已核验适配到 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
+    assert.ok(initialText.includes("本插件已验证的版本为 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
 
-    const installButton = settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+    const installButton = settingsRuntimeButton(tab.containerEl, "安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION);
     assert.ok(installButton);
     assert.equal(installButton.disabled, false);
     installButton.dispatchEvent({ type: "click" });
@@ -786,7 +790,7 @@ test("settings show the verified runtime version and install it on demand", asyn
     assert.equal(status.latestVersion, "");
     assert.equal(status.latestState, "idle");
     assert.ok(collectText(tab.containerEl).includes("本机已安装 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
-    assert.equal(settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, true);
+    assert.equal(settingsRuntimeButton(tab.containerEl, "已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION + " 已安装")?.disabled, true);
   } finally {
     plugin.onunload();
   }
@@ -817,7 +821,7 @@ test("the verified runtime install neither waits for nor invalidates the officia
     const install = plugin._installSupportedRuntime();
     assert.equal(plugin._getRuntimeStatus().installPhase, "downloading");
     assert.ok(findElement(tab.containerEl, (element) => element.tagName === "PROGRESS"));
-    assert.equal(settingsRuntimeButton(tab.containerEl, "正在安装已核验版本…")?.disabled, true);
+    assert.equal(settingsRuntimeButton(tab.containerEl, "正在安装已验证版本…")?.disabled, true);
 
     assert.deepEqual(await install, { ok: true, version: SUPPORTED_OFFICIAL_RUNTIME_VERSION, restartRequired: true });
     assert.deepEqual(requested, [OFFICIAL_RUNTIME_URL, officialRuntimeVersionUrl(SUPPORTED_OFFICIAL_RUNTIME_VERSION)]);
@@ -846,14 +850,47 @@ test("settings mark the verified runtime as installed instead of offering it aga
     tab.display();
     const text = collectText(tab.containerEl);
     assert.ok(text.includes("本机已安装 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
-    const button = settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION);
+    const button = settingsRuntimeButton(tab.containerEl, "已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION + " 已安装");
     assert.ok(button);
     assert.equal(button.disabled, true);
-    assert.doesNotMatch(text, /尚未核验适配/);
-    assert.doesNotMatch(text, /高于已核验适配版本/);
+    assert.doesNotMatch(text, /本插件尚未验证/);
+    assert.doesNotMatch(text, /高于本插件已验证的版本/);
   } finally {
     plugin.onunload();
   }
+});
+
+test("a verified runtime other than the pinned fallback is not reported as out of range", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadSettings = async function () {};
+  plugin._interceptNavigation = function () {};
+  plugin._detectAndHandleConflicts = function () {};
+  plugin._activateIMT = async function () { return false; };
+  plugin._shouldCheckLatestRuntimeVersion = () => false;
+  plugin._getRuntimeStatus = function () {
+    return {
+      installed: true,
+      version: "1.33.2",
+      loadedVersion: "",
+      latestVersion: "1.33.2",
+      latestState: "available",
+      installPhase: "",
+      installError: "",
+      restartRequired: false,
+    };
+  };
+
+  await plugin.onload();
+  const tab = addedSettingTabs[0];
+  tab.display();
+  const text = collectText(tab.containerEl);
+  assert.match(text, /本机已安装 v1\.33\.2，该版本已验证/);
+  assert.doesNotMatch(text, /本插件尚未验证/);
+  assert.doesNotMatch(text, /本机运行时 v1\.33\.2 本插件尚未验证/);
+  assert.equal(settingsRuntimeButton(tab.containerEl, "已是最新版本")?.disabled, true);
+  assert.equal(settingsRuntimeButton(tab.containerEl, "安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, false);
+  plugin.onunload();
 });
 
 test("settings name the installed verified runtime and flag each out-of-range version separately", async () => {
@@ -881,13 +918,13 @@ test("settings name the installed verified runtime and flag each out-of-range ve
   const tab = addedSettingTabs[0];
   tab.display();
   const officialBeyond = collectText(tab.containerEl);
-  assert.ok(officialBeyond.includes("本插件已核验适配到 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
-  assert.ok(officialBeyond.includes("官方当前版本 v99.0.0（尚未核验适配）"));
-  assert.match(officialBeyond, /官方当前版本 v99\.0\.0 尚未核验适配/);
-  assert.match(officialBeyond, /宿主弹窗自动翻译/);
-  assert.doesNotMatch(officialBeyond, /本机运行时 v[^ ]+ 高于已核验适配版本/, "the installed runtime is the verified one");
+  assert.ok(officialBeyond.includes("，该版本已验证"));
+  assert.ok(officialBeyond.includes("官方当前版本 v99.0.0（本插件尚未验证）"));
+  assert.match(officialBeyond, /官方当前版本本插件尚未验证/);
+  assert.match(officialBeyond, /设置窗口的自动翻译/);
+  assert.doesNotMatch(officialBeyond, /本机运行时 v[^ ]+ 本插件尚未验证/, "the installed runtime is the verified one");
   assert.equal(settingsRuntimeButton(tab.containerEl, "更新运行时")?.disabled, false);
-  assert.equal(settingsRuntimeButton(tab.containerEl, "已安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, true);
+  assert.equal(settingsRuntimeButton(tab.containerEl, "已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION + " 已安装")?.disabled, true);
 
   plugin._getRuntimeStatus = function () {
     return {
@@ -903,10 +940,10 @@ test("settings name the installed verified runtime and flag each out-of-range ve
   };
   tab.display();
   const installedBeyond = collectText(tab.containerEl);
-  assert.match(installedBeyond, /本机版本高于该范围/);
-  assert.ok(installedBeyond.includes("本机运行时 v99.0.0 高于已核验适配版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION));
-  assert.doesNotMatch(installedBeyond, /尚未核验适配/, "the official version is unknown, not out of range");
-  assert.equal(settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, false);
+  assert.match(installedBeyond, /本机版本高于该版本/);
+  assert.ok(installedBeyond.includes("本机运行时 v99.0.0 本插件尚未验证"));
+  assert.doesNotMatch(installedBeyond, /官方当前版本本插件尚未验证/, "the official version is unknown, not out of range");
+  assert.equal(settingsRuntimeButton(tab.containerEl, "安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION)?.disabled, false);
   plugin.onunload();
 });
 
@@ -968,14 +1005,14 @@ test("the verified runtime path rejects a download whose version does not match"
   try {
     const tab = addedSettingTabs[0];
     tab.display();
-    settingsRuntimeButton(tab.containerEl, "安装已核验版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION).dispatchEvent({ type: "click" });
+    settingsRuntimeButton(tab.containerEl, "安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION).dispatchEvent({ type: "click" });
     await tick();
 
     assert.equal(fs.readFileSync(path.join(pluginDir, "userscript.runtime.js"), "utf8"), installedContent);
     const status = plugin._getRuntimeStatus();
     assert.equal(status.version, "9.7.3");
-    assert.equal(status.installError, "脚本版本与已核验版本不一致");
-    assert.match(String(noticeMessages.at(-1)), /与已核验版本/);
+    assert.equal(status.installError, "脚本版本与已验证版本不一致");
+    assert.match(String(noticeMessages.at(-1)), /与已验证版本/);
     assert.match(collectText(tab.containerEl), /上次安装失败，可重试/);
   } finally {
     plugin.onunload();
@@ -5326,4 +5363,161 @@ test("child GM reads protect native titles and writes preserve the user's stored
   localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ generalRule: {} }));
   child.GM_setValue("fullLocalUserConfig", child.GM_getValue("fullLocalUserConfig"));
   assert.equal(Object.hasOwn(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")).generalRule, "isTranslateTitle"), false);
+});
+
+test("target-language hot sync requires a runtime version declared in the compatibility matrix", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const dispatched = [];
+  document.addEventListener = () => {};
+  document.removeEventListener = () => {};
+  document.dispatchEvent = (event) => { dispatched.push(JSON.parse(event.detail).type); return true; };
+
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript", userscriptVersion: "1.35.0", hostBridgeReady: true };
+  assert.equal(plugin._isHostTargetLanguageSyncReady(window), false);
+  assert.equal(await plugin._requestUserscriptDocumentMessage(OBSIDIAN_HOST_UPDATE_TARGET_LANGUAGE_MESSAGE, { targetLanguage: "ja" }), false);
+  assert.deepEqual(dispatched, []);
+
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript", userscriptVersion: "1.33.3", hostBridgeReady: true };
+  assert.equal(plugin._isHostTargetLanguageSyncReady(window), true);
+});
+
+test("a plugin reload keeps language hot sync closed while the surviving engine is unverified", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  window.__imt_extend_engine_state__ = { loaded: true, mode: "userscript", userscriptVersion: "1.35.0", hostBridgeReady: true };
+  plugin._ensureUserscript = async function () {
+    return "// ==UserScript==\n// @version 1.33.3\n// ==/UserScript==\nwindow.__imtRuntime = true;\n";
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  // The disk script is the verified version, but the running engine is not.
+  assert.equal(plugin._loadedUserscriptVersion, "1.35.0");
+  assert.equal(plugin._isHostTargetLanguageSyncReady(window), false);
+});
+
+test("userscript activation applies the side-panel width patch for a declared runtime version", async () => {
+  const { body } = setupRuntime();
+  const plugin = makePlugin();
+  plugin._ensureUserscript = async function () {
+    return '// @version 1.32.8\nvar gN=435,Jge="mock-side-panel-width",pN="cursor-mock-side-panel-host";';
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  assert.equal(body.children.at(-1).textContent.includes("gN=280"), true);
+});
+
+test("userscript activation leaves the side-panel declaration alone for an unregistered runtime version", async () => {
+  const { body } = setupRuntime();
+  const plugin = makePlugin();
+  plugin._ensureUserscript = async function () {
+    return '// @version 1.35.0\nvar gN=435,Jge="mock-side-panel-width",pN="cursor-mock-side-panel-host";';
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  assert.equal(body.children.at(-1).textContent.includes("gN=280"), false);
+  assert.equal(body.children.at(-1).textContent.includes("gN=435"), true);
+});
+
+test("the runtime compatibility notice names the closed features of an unverified runtime", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+
+  const notice = plugin._buildRuntimeCompatibilityNotice(resolveRuntimeCompatibility("1.35.0"), {
+    hostContentBridge: true,
+    lifecycleGuard: false,
+    regionBridge: false,
+  });
+
+  assert.match(notice, /本插件尚未验证翻译运行时 v1\.35\.0/);
+  assert.match(notice, /设置窗口的自动翻译与局部重译已关闭/);
+  assert.doesNotMatch(notice, /Dashboard/);
+  assert.match(notice, new RegExp("安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION.replace(/\./g, "\\.") + " 并重启 Obsidian"));
+  assert.match(notice, /等待插件更新/);
+});
+
+test("the runtime compatibility notice reports a declared 1.32.x limitation plainly", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+
+  const notice = plugin._buildRuntimeCompatibilityNotice(resolveRuntimeCompatibility("1.32.10"), {
+    hostContentBridge: true,
+    lifecycleGuard: false,
+    regionBridge: true,
+  });
+
+  assert.match(notice, /翻译运行时 v1\.32\.10 不支持设置窗口的自动翻译。/);
+  assert.match(notice, new RegExp("如需该功能，可在插件设置中安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION.replace(/\./g, "\\.") + " 并重启 Obsidian，或等待插件更新。"));
+  assert.doesNotMatch(notice, /本插件尚未验证/);
+  assert.doesNotMatch(notice, /Dashboard/);
+});
+
+test("the runtime compatibility notice reports a structure mismatch of a verified version", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+
+  const notice = plugin._buildRuntimeCompatibilityNotice(resolveRuntimeCompatibility("1.33.3"), {
+    hostContentBridge: true,
+    lifecycleGuard: false,
+    regionBridge: false,
+  });
+
+  assert.match(notice, /翻译运行时 v1\.33\.3 的内容与本插件已验证的版本不一致/);
+  assert.match(notice, /设置窗口的自动翻译与局部重译已关闭/);
+  assert.match(notice, /重新安装运行时，或更新插件/);
+});
+
+test("a verified runtime with every probed capability stays silent", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+
+  assert.equal(plugin._buildRuntimeCompatibilityNotice(resolveRuntimeCompatibility("1.33.3"), {
+    hostContentBridge: true,
+    lifecycleGuard: true,
+    regionBridge: true,
+  }), "");
+});
+
+test("the compatibility notice stays silent when interface translation is off and only window features are closed", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = false;
+
+  assert.equal(plugin._buildRuntimeCompatibilityNotice(resolveRuntimeCompatibility("1.35.0"), {
+    hostContentBridge: true,
+    lifecycleGuard: false,
+    regionBridge: false,
+  }), "");
+});
+
+test("the compatibility notice is emitted once per outcome", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  const compatibility = resolveRuntimeCompatibility("1.35.0");
+  const readiness = { hostContentBridge: true, lifecycleGuard: false, regionBridge: false };
+
+  assert.equal(plugin._notifyRuntimeCompatibility(compatibility, readiness), true);
+  assert.equal(plugin._notifyRuntimeCompatibility(compatibility, readiness), false);
+  assert.equal(noticeMessages.filter((message) => /本插件尚未验证翻译运行时/.test(message)).length, 1);
+});
+
+test("userscript activation reports an unverified runtime with its recovery path", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.uiTranslateEnabled = true;
+  plugin._ensureUserscript = async function () {
+    return actual1328HostBridgeFixture().replace("1.32.8", "1.35.0");
+  };
+
+  assert.equal(await plugin._activateIMT(), true);
+  const compatibilityNotices = noticeMessages.filter((message) => /本插件尚未验证翻译运行时/.test(message));
+  assert.equal(compatibilityNotices.length, 1);
+  assert.match(compatibilityNotices[0], /等待插件更新/);
+  assert.match(compatibilityNotices[0], new RegExp("安装已验证版本 v" + SUPPORTED_OFFICIAL_RUNTIME_VERSION.replace(/\./g, "\\.")));
 });
