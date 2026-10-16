@@ -159,10 +159,12 @@ function readRuntimeVersion(content) {
   const declared = extractRuntimeVersion(content);
   if (declared) return declared;
   if (typeof content !== "string") return "";
-  // The delimiter patterns are line-anchored; scan the source line-wise.
-  const hasDelimiters = content.split(/\r?\n/).some((line) => METADATA_START_PATTERN.test(line) || METADATA_END_PATTERN.test(line));
+  // The delimiter patterns are line-anchored; scan the source line-wise and
+  // strip the BOM first, matching what extractRuntimeVersion reads past.
+  const hasDelimiters = content.replace(/^\uFEFF/, "").split(/\r?\n/).some((line) => METADATA_START_PATTERN.test(line) || METADATA_END_PATTERN.test(line));
   if (hasDelimiters) return "";
-  const match = /^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m.exec(content);
+  const bareSource = content.replace(/^\uFEFF/, "");
+  const match = /^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m.exec(bareSource);
   return match && isRuntimeVersion(match[1]) ? match[1] : "";
 }
 

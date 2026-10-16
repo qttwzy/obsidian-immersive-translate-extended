@@ -101,6 +101,15 @@ test("a malformed metadata block is unreadable instead of falling back to a stra
   assert.equal(readRuntimeVersion("// @version 1.34.1\nwindow.x=1;"), "1.34.1");
 });
 
+test("a BOM-prefixed source strips the BOM before the delimiter scan and fallback", () => {
+  // BOM + opening delimiter but no usable block: unreadable, not a bare line.
+  assert.equal(readRuntimeVersion("\uFEFF// ==UserScript==\n// @version 1.34.1\nwindow.x=1;"), "");
+  // BOM + duplicate @version inside a block: still unreadable.
+  assert.equal(readRuntimeVersion("\uFEFF// ==UserScript==\n// @version 1.34.1\n// @version 9.9.9\n// ==/UserScript==\n"), "");
+  // BOM + bare version line: the fallback applies after the BOM is stripped.
+  assert.equal(readRuntimeVersion("\uFEFF// @version 1.34.1\nwindow.x=1;"), "1.34.1");
+});
+
 test("an unregistered version resolves to no declared capability", () => {
   for (const version of ["1.35.0", "1.33.1", "1.33.3-beta.1", "2.0.0"]) {
     const resolved = resolveRuntimeCompatibility(version);
