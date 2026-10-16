@@ -7,6 +7,7 @@ const {
   RUNTIME_CAPABILITY_NAMES,
   RUNTIME_COMPAT_FAMILIES,
   RUNTIME_COMPAT_MATRIX,
+  readRuntimeVersion,
   SUPPORTED_OFFICIAL_RUNTIME_VERSION,
   resolveRuntimeCompatibility,
 } = require("../plugin/runtime-contract");
@@ -90,6 +91,14 @@ test("the 1.34.x profile registers the verified official runtime", () => {
   assert.equal(resolved.capabilities.lifecycleGuard, true);
   assert.equal(resolved.capabilities.regionBridge, true);
   assert.equal(resolved.capabilities.sidePanelWidth, false);
+});
+
+test("a malformed metadata block is unreadable instead of falling back to a stray version line", () => {
+  const malformed = "// ==UserScript==\n// @version 1.34.1\n// @version 9.9.9\n// ==/UserScript==\nwindow.x=1;";
+  assert.equal(readRuntimeVersion(malformed), "");
+  assert.equal(resolveRuntimeCompatibility(readRuntimeVersion(malformed)).known, false);
+  // A bare version line without any metadata delimiters still resolves.
+  assert.equal(readRuntimeVersion("// @version 1.34.1\nwindow.x=1;"), "1.34.1");
 });
 
 test("an unregistered version resolves to no declared capability", () => {

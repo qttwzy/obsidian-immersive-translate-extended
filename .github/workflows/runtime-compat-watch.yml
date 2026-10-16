@@ -35,8 +35,20 @@ jobs:
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p 'require("./runtime-compat.json").version || "unknown"')" >> "$GITHUB_OUTPUT"
-          cat runtime-compat.md >> "$GITHUB_STEP_SUMMARY"
+          # The checker writes both artifacts before its drift exit (3), but a
+          # source error (2) writes neither. Keep the summary instead of
+          # failing on the missing files here; the final step fails the job.
+          if [ -s runtime-compat.md ]; then
+            echo "version=$(node -p 'require("./runtime-compat.json").version || "unknown"')" >> "$GITHUB_OUTPUT"
+            cat runtime-compat.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "version=unknown" >> "$GITHUB_OUTPUT"
+            {
+              echo "## 官方运行时兼容冒烟"
+              echo ""
+              echo "- 结果：来源不可读（退出码 2），未产生报告；详见上方步骤日志。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit 0
 
       - name: Open or update the drift issue

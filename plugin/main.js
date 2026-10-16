@@ -3697,12 +3697,18 @@ function extractRuntimeVersion(content) {
 }
 
 // Reads the declared version of a userscript. A complete metadata block is
-// authoritative; a bare `// @version` line is accepted for sources that only
-// carry the version comment (hand-written candidates and test fixtures).
+// authoritative: when one is present but malformed (no usable `@version`),
+// the source stays unreadable instead of falling back to a stray version line
+// that the installer would reject. The bare `// @version` fallback only
+// applies to sources that carry no metadata block at all (hand-written
+// candidates and test fixtures).
 function readRuntimeVersion(content) {
   const declared = extractRuntimeVersion(content);
   if (declared) return declared;
   if (typeof content !== "string") return "";
+  // The delimiter patterns are line-anchored; scan the source line-wise.
+  const hasDelimiters = content.split(/\r?\n/).some((line) => METADATA_START_PATTERN.test(line) || METADATA_END_PATTERN.test(line));
+  if (hasDelimiters) return "";
   const match = /^[ \t]*\/\/[ \t]*@version[ \t]+([^\s]+)[ \t]*$/m.exec(content);
   return match && isRuntimeVersion(match[1]) ? match[1] : "";
 }
