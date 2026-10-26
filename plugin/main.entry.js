@@ -76,7 +76,7 @@ var IMTExtendedPlugin = (function () {
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
 
   var PLUGIN_ID = "immersive-translate-extended";
-  var PLUGIN_VERSION = "4.0.6";
+  var PLUGIN_VERSION = "4.0.7";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_HEADER_BYTES = 64 * 1024;

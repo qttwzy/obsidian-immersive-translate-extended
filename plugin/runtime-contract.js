@@ -22,6 +22,12 @@ const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
 // own anchor probe.
 const RUNTIME_COMPAT_MATRIX = [
   {
+    version: "1.34.4",
+    profile: "1.34.4",
+    evidence: "official-script",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
+  {
     version: "1.34.1",
     profile: "1.34.x",
     evidence: "live-obsidian",

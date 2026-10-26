@@ -52,6 +52,7 @@ const REGION_FIXTURE_SHAPES = {
   "1.33.2": { wrapper: "w9", traverser: "Ap", timer: "bp", marks: "ur", stopped: "Yr", engine: "Ve", context: "Ci", entry: "Yr()" },
   "1.33.3": { wrapper: "A9", traverser: "Mp", timer: "Tp", marks: "ur", stopped: "Yr", engine: "Ve", context: "Ci", entry: "Yr()" },
   "1.34.1": { wrapper: "$M", traverser: "Of", timer: "pf", marks: "sr", stopped: "ei", engine: "He", context: "Di", entry: "ei()||n?.shouldContinue?.()===!1" },
+  "1.34.4": { wrapper: "$M", traverser: "Ff", timer: "hf", marks: "sr", stopped: "ei", engine: "He", context: "Di", entry: "ei()||n?.shouldContinue?.()===!1" },
 };
 
 function hostRegionBridgeFixture(version = "1.33.2") {
@@ -93,6 +94,16 @@ function FRe(){}
 `;
 }
 
+// Reduced executable copy of the 1.34.4 bSt -> vo -> Yme call shape: 1.34.4
+// keeps the 1.34.1 body and renames the trigger normalizer the handler passes
+// to translatePage.
+function actual1344HostLifecycleFixture() {
+  return actual1341HostLifecycleFixture()
+    .replace("// @version 1.34.1", "// @version 1.34.4")
+    .replace("const hQ=t=>t?.trigger;", "const yQ=t=>t?.trigger;")
+    .replace("trigger:hQ(t)", "trigger:yQ(t)");
+}
+
 function legacyHostRegionBridgeFixture() {
   return [
     "// @version 1.32.10",
@@ -116,6 +127,7 @@ module.exports = {
   actual1332HostBridgeFixture,
   actual1332HostLifecycleFixture,
   actual1341HostLifecycleFixture,
+  actual1344HostLifecycleFixture,
   legacyHostRegionBridgeFixture,
   hostRegionBridgeFixture,
   renamedTransportHostBridgeFixture,

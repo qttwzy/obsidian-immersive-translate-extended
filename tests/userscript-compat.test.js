@@ -18,6 +18,7 @@ const {
   actual1332HostBridgeFixture,
   actual1332HostLifecycleFixture,
   actual1341HostLifecycleFixture,
+  actual1344HostLifecycleFixture,
   hostBridgeFixture,
   hostRegionBridgeFixture,
   legacyHostRegionBridgeFixture,
@@ -505,7 +506,7 @@ test("an old asynchronous previous-page restore cannot clear a reopened child se
   } finally { delete globalThis.__imtHostTranslationPolicy; }
 });
 
-for (const version of ["1.33.2", "1.33.3", "1.34.1"]) {
+for (const version of ["1.33.2", "1.33.3", "1.34.1", "1.34.4"]) {
   test(`region bridge ${version} scans only a new subtree and leaves old translation in place`, async () => {
     const h = regionHarness(version);
     const root = h.element(null, { marked: true });
@@ -553,6 +554,40 @@ test("the 1.34.1 lifecycle guard keeps its generation through the handler invoca
     assert.equal(h.result.source.includes("__imtHostLifecycleGuardV1"), true);
     assert.deepEqual(patchUserscriptHostLifecycleGuard(h.result.source), { source: h.result.source, changed: false, reason: "already-patched" });
   } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("lifecycle guard stops a stale 1.34.4 page session after the gate resumes", async () => {
+  const gate = deferred();
+  const policy = { active: true, generation: 3 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise }, actual1344HostLifecycleFixture());
+    const task = h.page({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host" });
+    await Promise.resolve();
+    policy.active = false;
+    policy.generation++;
+    gate.resolve({ allowed: true });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("the 1.34.4 lifecycle guard keeps its generation through the handler invocation", async () => {
+  const policy = { active: true, generation: 5 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({}, actual1344HostLifecycleFixture());
+    const context = await h.handler({ url: "https://example.com" }, { trigger: "host", __imtHostGeneration: 5 });
+    assert.equal(context.url, "https://example.com");
+    assert.equal(h.result.source.includes("__imtHostLifecycleGuardV1"), true);
+    assert.deepEqual(patchUserscriptHostLifecycleGuard(h.result.source), { source: h.result.source, changed: false, reason: "already-patched" });
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("the 1.34.4 profile pins the renamed trigger normalizer", () => {
+  const stale = actual1344HostLifecycleFixture().replace("trigger:yQ(t)", "trigger:hQ(t)");
+  assert.deepEqual(patchUserscriptHostLifecycleGuard(stale), { source: stale, changed: false, reason: "anchor-not-found" });
+  assert.equal(patchUserscriptHostLifecycleGuard(actual1344HostLifecycleFixture()).changed, true);
 });
 
 test("legacy 1.32.10 host runtime accepts the regional bridge patch", () => {

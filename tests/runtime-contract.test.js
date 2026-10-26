@@ -93,6 +93,17 @@ test("the 1.34.x profile registers the verified official runtime", () => {
   assert.equal(resolved.capabilities.sidePanelWidth, false);
 });
 
+test("the 1.34.4 profile registers the current official runtime", () => {
+  const resolved = resolveRuntimeCompatibility("1.34.4");
+  assert.equal(resolved.known, true);
+  assert.equal(resolved.profile, "1.34.4");
+  assert.equal(resolved.evidence, "official-script");
+  assert.equal(resolved.capabilities.hostContentBridge, true);
+  assert.equal(resolved.capabilities.lifecycleGuard, true);
+  assert.equal(resolved.capabilities.regionBridge, true);
+  assert.equal(resolved.capabilities.sidePanelWidth, false);
+});
+
 test("a malformed metadata block is unreadable instead of falling back to a stray version line", () => {
   const malformed = "// ==UserScript==\n// @version 1.34.1\n// @version 9.9.9\n// ==/UserScript==\nwindow.x=1;";
   assert.equal(readRuntimeVersion(malformed), "");

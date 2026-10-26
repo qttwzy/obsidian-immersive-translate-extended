@@ -224,11 +224,12 @@ function patchUserscriptHostContentBridge(source) {
 
 // This bridge is installed after the host content bridge and lifecycle guard.
 // Keep the upstream engine's paragraph callback by calling its own bounded
-// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3, $M in 1.34.1).
+// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3, $M in 1.34.1 and 1.34.4).
 const REGION_BRIDGE_SHAPES = {
   "1.33.2": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "w9", traverse: "Ap", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.33.3": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "A9", traverse: "Mp", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.34.x": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Of", timing: "pf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
+  "1.34.4": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Ff", timing: "hf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
 };
 
 function patchUserscriptHostRegionBridge(source) {
@@ -356,9 +357,9 @@ function patchLegacyHostRegionBridge(source) {
   return { source: withHelper.replace(translate[0][0], translate[0][0] + branch), changed: true, reason: "patched" };
 }
 
-// These lifecycle boundaries were inspected in the official 1.33.2, 1.33.3 and
-// 1.34.1 runtimes. Capture minified names, but require the profile's full call
-// shape before editing a source.
+// These lifecycle boundaries were inspected in the official 1.33.2, 1.33.3,
+// 1.34.1 and 1.34.4 runtimes. Capture minified names, but require the profile's
+// full call shape before editing a source.
 const LIFECYCLE_GUARD_SHAPE_133 = {
   parser: new RegExp("function (" + JS_IDENTIFIER + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0\\}"),
   page: new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t\\)\\{let n=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"),
@@ -387,10 +388,17 @@ const LIFECYCLE_GUARD_SHAPE_134 = {
   gateResult: ["});if(!b)return;let y=b.session_id;", "});if(!__imtHostCurrent()||!b)return;let y=b.session_id;"],
   recursionTail: "...g===!1?{enableObserver:!1}:{}})};",
 };
+// 1.34.4 keeps the 1.34 call shape and renames the trigger normalizer the
+// invocation passes to translatePage (yQ; hQ in 1.34.1).
+const LIFECYCLE_GUARD_SHAPE_1344 = {
+  ...LIFECYCLE_GUARD_SHAPE_134,
+  invocation: new RegExp(escapeRegExp('await Xa("translatePage")(r,{trigger:yQ(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
+};
 const LIFECYCLE_GUARD_SHAPES = {
   "1.33.2": LIFECYCLE_GUARD_SHAPE_133,
   "1.33.3": LIFECYCLE_GUARD_SHAPE_133,
   "1.34.x": LIFECYCLE_GUARD_SHAPE_134,
+  "1.34.4": LIFECYCLE_GUARD_SHAPE_1344,
 };
 function patchUserscriptHostLifecycleGuard(source) {
   if (typeof source !== "string") return unchanged(source, "invalid-source");
