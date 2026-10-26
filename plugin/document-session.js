@@ -252,7 +252,6 @@ function createDocumentSession(options) {
     },
     setPdfDownloadSource(source) { pdfDownloadSource = source; },
     scheduleRefresh,
-    clearRefresh,
     cancelPendingDownload,
     setPendingDownload(pending) { pendingPdfDownload = pending; },
     isPendingDownload(pending) { return pendingPdfDownload === pending; },

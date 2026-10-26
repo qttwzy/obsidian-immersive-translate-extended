@@ -4698,7 +4698,7 @@ test("Dashboard host accepts full safe config but still rejects unrelated forged
     webContents: { executeJavaScript: () => Promise.resolve(JSON.stringify(snapshot)) },
   };
 
-  assert.equal(await plugin._syncDashboardConfig(), true);
+  assert.deepEqual(await plugin._syncDashboardConfig(), { ok: true, changed: true, code: "" });
   assert.deepEqual(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")), {
     targetLanguage: "de",
     translationMode: "translation",
@@ -4706,6 +4706,76 @@ test("Dashboard host accepts full safe config but still rejects unrelated forged
   });
   assert.equal(localStorage.getItem("imt-gm-usage_limit_stats"), null);
   assert.equal(localStorage.getItem("imt-gm-translateServices"), null);
+});
+
+test("Dashboard sync distinguishes changed, unchanged, and rejected snapshots", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  plugin._refreshUserscriptRuntime = () => true;
+  plugin._pushConfigToDashboard = () => Promise.resolve(true);
+  const values = { "imt-gm-fullLocalUserConfig": JSON.stringify({ targetLanguage: "ja" }) };
+  const snapshot = { version: 1, scope: "dashboard", values, deletedKeys: [], hash: syncHash(values, []) };
+  plugin._dashboardWindow = {
+    isDestroyed: () => false,
+    webContents: { executeJavaScript: () => Promise.resolve(JSON.stringify(snapshot)) },
+  };
+
+  assert.deepEqual(await plugin._syncDashboardConfig({ silent: true }), { ok: true, changed: true, code: "" });
+  assert.deepEqual(await plugin._syncDashboardConfig({ silent: true }), { ok: true, changed: false, code: "unchanged" });
+
+  plugin._dashboardWindow.webContents.executeJavaScript = () => Promise.resolve(JSON.stringify({
+    version: 1,
+    scope: "dashboard",
+    values,
+    deletedKeys: [],
+    hash: "00000000",
+  }));
+  assert.deepEqual(await plugin._syncDashboardConfig({ silent: true }), { ok: false, changed: false, code: "invalid_snapshot" });
+});
+
+test("Dashboard sync reports a failed local write instead of success", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  const values = { "imt-gm-fullLocalUserConfig": JSON.stringify({ targetLanguage: "ja" }) };
+  const snapshot = { version: 1, scope: "dashboard", values, deletedKeys: [], hash: syncHash(values, []) };
+  plugin._dashboardWindow = {
+    isDestroyed: () => false,
+    webContents: { executeJavaScript: () => Promise.resolve(JSON.stringify(snapshot)) },
+  };
+  const originalSetItem = localStorage.setItem;
+  localStorage.setItem = function (key, value) {
+    if (String(key) === "imt-gm-fullLocalUserConfig") throw new Error("quota");
+    return originalSetItem.call(this, key, value);
+  };
+  try {
+    assert.deepEqual(await plugin._syncDashboardConfig({ silent: true }), { ok: false, changed: false, code: "commit_failed" });
+  } finally {
+    localStorage.setItem = originalSetItem;
+  }
+});
+
+test("Dashboard sync serializes concurrent button and poll applies", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "zh-CN" }));
+  plugin._refreshUserscriptRuntime = () => true;
+  plugin._pushConfigToDashboard = () => Promise.resolve(true);
+  const values = { "imt-gm-fullLocalUserConfig": JSON.stringify({ targetLanguage: "ja" }) };
+  const snapshot = { version: 1, scope: "dashboard", values, deletedKeys: [], hash: syncHash(values, []) };
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  plugin._dashboardWindow = {
+    isDestroyed: () => false,
+    webContents: { executeJavaScript: () => gate.then(() => JSON.stringify(snapshot)) },
+  };
+
+  const first = plugin._syncDashboardConfig({ silent: true });
+  const second = plugin._syncDashboardConfig({ silent: true });
+  release();
+  assert.deepEqual(await first, { ok: true, changed: true, code: "" });
+  assert.deepEqual(await second, { ok: true, changed: false, code: "unchanged" });
 });
 
 test("sync rejects a bad hash without mutating local storage", async () => {

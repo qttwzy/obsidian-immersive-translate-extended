@@ -3,14 +3,16 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { createDocumentHandoffConfirmationSource } = require("./document-runtime");
+const {
+  DOCUMENT_WORKSPACE_ORIGIN,
+  TRANSLATED_PDF_MAX_BYTES,
+  createDocumentHandoffConfirmationSource,
+} = require("./document-runtime");
 
 const PDF_WORKSPACE_URL = "https://app.immersivetranslate.com/pdf/";
 const FILE_WORKSPACE_URL = "https://app.immersivetranslate.com/file/";
 const PDF_MAX_BYTES = 100 * 1024 * 1024;
-const TRANSLATED_PDF_MAX_BYTES = 512 * 1024 * 1024;
 const PDF_CAPTURE_DIRECTORY_PREFIX = ".imt-pdf-export-";
-const DOCUMENT_WORKSPACE_ORIGIN = "https://app.immersivetranslate.com";
 const DOCUMENT_ROUTE_PREFIXES = [
   "/file/", "/pdf/", "/pdf-pro/", "/babel-doc/",
   "/ebook/", "/subtitle/", "/html/", "/markdown/",
@@ -326,12 +328,10 @@ module.exports = {
   discardTranslatedPdfCapture,
   DOCUMENT_EXTENSIONS,
   DOCUMENT_ROUTE_PREFIXES,
-  DOCUMENT_WORKSPACE_ORIGIN,
   FILE_WORKSPACE_URL,
   finalizeTranslatedPdfCapture,
   PDF_MAX_BYTES,
   PDF_WORKSPACE_URL,
-  TRANSLATED_PDF_MAX_BYTES,
   getDocumentWorkspaceSpec,
   handoffLocalFileWithCdp,
   isPathWithin,

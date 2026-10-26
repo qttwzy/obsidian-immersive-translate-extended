@@ -5,26 +5,13 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const ROOT = path.join(__dirname, "..");
-const FILES = [
-  "plugin/dashboard-preload.entry.js",
-  "plugin/dashboard-preload.js",
-  "plugin/document-preload.js",
-  "plugin/document-runtime.js",
-  "plugin/document-session.js",
-  "plugin/main.entry.js",
-  "plugin/main.js",
-  "plugin/runtime-contract.js",
-  "plugin/runtime-installer.js",
-  "plugin/sync-protocol.js",
-  "plugin/translation-state.js",
-  "scripts/build-plugin.js",
-  "scripts/check-runtime-compat.js",
-  "scripts/check-syntax.js",
-  "scripts/package-plugin.js",
-];
-const OPTIONAL_PRIVATE_FILES = ["scripts/sync-public-tree.js"];
+const FILES = ["plugin", "scripts"].flatMap((directory) => fs
+  .readdirSync(path.join(ROOT, directory), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+  .map((entry) => directory + "/" + entry.name)
+  .sort());
 
-for (const file of FILES.concat(OPTIONAL_PRIVATE_FILES.filter((file) => fs.existsSync(path.join(ROOT, file))))) {
+for (const file of FILES) {
   const result = spawnSync(process.execPath, ["--check", path.join(ROOT, file)], { encoding: "utf8" });
   if (result.status !== 0) {
     process.stderr.write(result.stderr || result.stdout || ("Syntax check failed: " + file + "\n"));

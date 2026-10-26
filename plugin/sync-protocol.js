@@ -62,6 +62,35 @@ function sanitizeFullLocalUserConfig(value) {
   return safeConfig;
 }
 
+function serializeSafeSyncValue(key, rawValue, deps) {
+  const options = deps && typeof deps === "object" ? deps : {};
+  const prefix = typeof options.storePrefix === "string" && options.storePrefix ? options.storePrefix : GM_STORE_PREFIX;
+  const configKey = typeof options.configKey === "string" && options.configKey ? options.configKey : "fullLocalUserConfig";
+  const hasAuthToken = typeof options.hasAuthToken === "function" ? options.hasAuthToken : function () { return false; };
+  const sanitizeUserInfo = typeof options.sanitizeUserInfo === "function" ? options.sanitizeUserInfo : null;
+  let value = rawValue;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch (error) {}
+  }
+  if (key === prefix + "userInfo") {
+    if (!hasAuthToken() || !sanitizeUserInfo) return null;
+    value = sanitizeUserInfo(value);
+    if (!value) return null;
+  } else if (key === prefix + "subscriptionInfo") {
+    if (!hasAuthToken()) return null;
+    value = redactSyncValue(value, 0);
+  } else if (key === prefix + configKey) {
+    value = sanitizeFullLocalUserConfig(value);
+    if (!value) return null;
+  } else {
+    value = redactSyncValue(value, 0);
+  }
+  let serialized;
+  try { serialized = JSON.stringify(value); } catch (error) { return null; }
+  if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
+  return serialized;
+}
+
 function canonicalSyncSuffix(suffix) {
   if (suffix === "user_info") return "userInfo";
   if (suffix === "memberConfig") return "fullLocalUserConfig";
@@ -111,4 +140,5 @@ module.exports = {
   orderedSyncValues,
   redactSyncValue,
   sanitizeFullLocalUserConfig,
+  serializeSafeSyncValue,
 };

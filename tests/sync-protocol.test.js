@@ -44,3 +44,20 @@ test("fullLocalUserConfig sanitizer rejects oversized objects", () => {
     targetLanguage: "ja",
   });
 });
+
+test("safe sync serialization gates identity, sanitizes config, and bounds size", () => {
+  const deps = {
+    storePrefix: "imt-gm-",
+    configKey: "fullLocalUserConfig",
+    hasAuthToken: () => true,
+    sanitizeUserInfo: (value) => value && { email: value.email },
+  };
+
+  assert.deepEqual(JSON.parse(syncProtocol.serializeSafeSyncValue("imt-gm-userInfo", JSON.stringify({ email: "a", token: "x" }), deps)), { email: "a" });
+  assert.equal(syncProtocol.serializeSafeSyncValue("imt-gm-userInfo", "{}", { ...deps, hasAuthToken: () => false }), null);
+  assert.deepEqual(JSON.parse(syncProtocol.serializeSafeSyncValue("imt-gm-subscriptionInfo", { plan: "pro", token: "x" }, deps)), { plan: "pro" });
+  assert.equal(syncProtocol.serializeSafeSyncValue("imt-gm-subscriptionInfo", {}, { ...deps, hasAuthToken: () => false }), null);
+  assert.deepEqual(JSON.parse(syncProtocol.serializeSafeSyncValue("imt-gm-fullLocalUserConfig", { targetLanguage: "ja", apiKey: "x" }, deps)), { targetLanguage: "ja" });
+  assert.deepEqual(JSON.parse(syncProtocol.serializeSafeSyncValue("imt-gm-other", { token: "x", keep: 1 }, deps)), { keep: 1 });
+  assert.equal(syncProtocol.serializeSafeSyncValue("imt-gm-other", "x".repeat(syncProtocol.SYNC_MAX_VALUE_BYTES + 1), deps), null);
+});

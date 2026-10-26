@@ -104,18 +104,6 @@ function isTranslationOwnedNode(node, root) {
   return false;
 }
 
-function hasHostContentChange(mutations, root) {
-  return mutations.some((mutation) => {
-    if (isTranslationOwnedNode(mutation.target, root)) return false;
-    const nodes = mutation.type === "characterData" ? [mutation.target] : Array.from(mutation.addedNodes || []);
-    return nodes.some((node) => {
-      if (isTranslationOwnedNode(node, root)) return false;
-      if (node.nodeType === 3 && !String(node.nodeValue || "").trim()) return false;
-      return isHostSurfaceNode(node.nodeType === 3 ? node.parentNode : node, root);
-    });
-  });
-}
-
 function changedHostRegions(mutations, root) {
   const regions = new Set();
   for (const mutation of mutations) {

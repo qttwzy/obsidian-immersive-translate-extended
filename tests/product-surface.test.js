@@ -17,7 +17,6 @@ test("active plugin version is consistent across release surfaces", () => {
   assert.equal(packageJson.version, version);
   assert.equal(manifest.version, version);
   assert.match(main, new RegExp("PLUGIN_VERSION = \\\"" + version.replace(/\\./g, "\\\\.") + "\\\""));
-  assert.match(packageJson.scripts.test, /node --test/);
 });
 
 test("active bridges distinguish the plugin version from the loaded userscript version", () => {
@@ -29,23 +28,29 @@ test("active bridges distinguish the plugin version from the loaded userscript v
   assert.match(entry, /_imtUserscriptVersion/);
   assert.match(entry, /_imtBridgeVersion: PLUGIN_VERSION/);
   assert.match(preload, new RegExp("BRIDGE_VERSION = \\\"" + packageJson.version.replace(/\\./g, "\\\\.") + "\\\""));
-  const dashboardEntry = fs.readFileSync(path.join(ROOT, "plugin", "dashboard-preload.entry.js"), "utf8");
-  assert.match(dashboardEntry, /require\(\"\.\/sync-protocol\"\)/);
-  assert.match(dashboardEntry, /require\(\"\.\/gm-element\"\)/);
-  assert.match(dashboardEntry, /require\(\"\.\/dashboard-origins\"\)/);
-  assert.match(dashboardEntry, /require\(\"\.\/user-info\"\)/);
-  assert.doesNotMatch(preload, /require\(\"\.\/sync-protocol\"\)/);
-  assert.doesNotMatch(preload, /require\(\"\.\/gm-element\"\)/);
-  assert.doesNotMatch(preload, /require\(\"\.\/dashboard-origins\"\)/);
-  assert.doesNotMatch(preload, /require\(\"\.\/user-info\"\)/);
-  assert.match(preload, /\$1_\$2/);
+  const { createDashboardPreload } = require("../scripts/build-plugin");
+  assert.doesNotMatch(createDashboardPreload(), /\brequire\(\s*["']\.\//);
 });
 
-test("Obsidian release entry embeds local runtime modules", () => {
-  const main = fs.readFileSync(path.join(ROOT, "plugin", "main.js"), "utf8");
+test("Obsidian release entry embeds every required local runtime module", () => {
+  const { createBundle } = require("../scripts/build-plugin");
+  const bundle = createBundle();
+  const factories = new Set([...bundle.matchAll(/__imtFactories\["([^"]+)"\]/g)].map((match) => match[1]));
 
-  assert.match(main, /__imtFactories/);
-  assert.doesNotMatch(main, /require\(\"\.\/(?:auth-session-adapter|dashboard-origins|dashboard-pkce-host|document-runtime|document-session|document-workspace|gm-element|gm-headers|gm-request-body|gm-response-value|owned-window|runtime-contract|runtime-installer|sync-protocol|translation-state|user-info)\"\)/);
+  assert.match(bundle, /__imtFactories/);
+  assert.doesNotMatch(bundle, /\brequire\(\s*["']\.\//);
+  for (const match of bundle.matchAll(/__imtRequire\("([^"]+)"\)/g)) {
+    assert.ok(factories.has(match[1]), "missing factory for " + match[1]);
+  }
+});
+
+test("build rejects a local require without a registered module", () => {
+  const { assertLocalModulesRegistered } = require("../scripts/build-plugin");
+
+  assert.throws(
+    () => assertLocalModulesRegistered(["var x = require(\"./not-registered\");"], ["sync-protocol"]),
+    /not-registered/,
+  );
 });
 
 test("runtime installation is user initiated from the official source", () => {

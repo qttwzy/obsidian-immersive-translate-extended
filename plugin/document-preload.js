@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
+  DEFAULT_REQUEST_TIMEOUT_MS,
   DOCUMENT_HANDOFF_OVERLAY_ID,
   DOCUMENT_RUNTIME_ACTION_CHANNEL,
   DOCUMENT_RUNTIME_BRIDGE_KEY,
@@ -13,22 +14,17 @@ const {
   DOCUMENT_RUNTIME_REQUEST_CHANNEL,
   DOCUMENT_RUNTIME_STATUS_CHANNEL,
   DOCUMENT_RUNTIME_WORLD_ID,
+  DOCUMENT_WORKSPACE_ORIGIN,
+  IMT_API_HOSTS,
+  MAX_REQUEST_BODY_BYTES,
+  MAX_REQUEST_TIMEOUT_MS,
+  TRANSLATED_PDF_MAX_BYTES,
   collectDocumentHandoffEvidence,
   resolveDocumentHandoffOverlay,
 } = require("./document-runtime");
 
-const IMT_API_HOSTS = new Set([
-  "api.immersivetranslate.com",
-  "api2.immersivetranslate.com",
-  "aigw1.immersivetranslate.com",
-]);
 const UNSAFE_STORE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000;
-const MAX_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
-const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 const ACTION_TIMEOUT_MS = 10 * 1000;
-const MAX_TRANSLATED_PDF_BYTES = 512 * 1024 * 1024;
-const DOCUMENT_WORKSPACE_ORIGIN = "https://app.immersivetranslate.com";
 
 let memoryStore = Object.create(null);
 let authToken = "";
@@ -289,7 +285,7 @@ function privateCaptureTicket(input) {
   if (!ticket || typeof ticket.token !== "string" || !/^[0-9a-f]{32}$/.test(ticket.token) ||
       typeof ticket.tempPath !== "string" || !path.isAbsolute(ticket.tempPath) || path.basename(ticket.tempPath) !== "capture.pdf" ||
       typeof ticket.sourceFileName !== "string" || !/\.pdf$/i.test(ticket.sourceFileName) || /[\\/]/.test(ticket.sourceFileName) ||
-      !Number.isSafeInteger(ticket.maxBytes) || ticket.maxBytes <= 0 || ticket.maxBytes > MAX_TRANSLATED_PDF_BYTES) return null;
+      !Number.isSafeInteger(ticket.maxBytes) || ticket.maxBytes <= 0 || ticket.maxBytes > TRANSLATED_PDF_MAX_BYTES) return null;
   return {
     token: ticket.token,
     tempPath: ticket.tempPath,

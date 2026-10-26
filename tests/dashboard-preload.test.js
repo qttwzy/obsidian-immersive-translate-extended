@@ -195,6 +195,28 @@ test("Dashboard sync controls recover after an SPA render removes them", async (
   assert.equal(runtime.document.getElementById("imt-back-btn"), null);
 });
 
+test("sync button asks the host to apply the full Dashboard snapshot", async () => {
+  const runtime = createRuntime({
+    hostAuthState: {
+      token: "sync-button-token",
+      userInfo: { email: "sync-button@example.com" },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const requests = [];
+  runtime.__imtDashboardHost = {
+    request(type) {
+      requests.push(type);
+      return Promise.resolve({ ok: true, changed: true });
+    },
+  };
+
+  runtime.document.getElementById("imt-sync-btn").onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(requests, ["requestDashboardSync"]);
+});
+
 test("preload does not overwrite a page login completed while host hydration is pending", async () => {
   let resolveHostAuthState;
   const hostAuthState = new Promise((resolve) => { resolveHostAuthState = resolve; });
@@ -749,7 +771,6 @@ test("host-pushed config is sanitized locally and invalidates a pending sync sna
   runtime.chrome.storage.onChanged.addListener((changeSet, area) => changes.push({ changeSet, area }));
   runtime.localStorage.setItem("imt-gm-fullLocalUserConfig", JSON.stringify({ targetLanguage: "en" }));
   const pending = runtime.__imt_build_sync_snapshot();
-  runtime.__imt_sync_data = JSON.stringify(pending);
 
   const applied = runtime.__imt_apply_host_config({
     targetLanguage: "ja",
@@ -764,7 +785,6 @@ test("host-pushed config is sanitized locally and invalidates a pending sync sna
     generalRule: { mouseHoverHoldKey: "Alt" },
   });
   assert.equal(runtime.__imt_sync_pending_snapshot, null);
-  assert.equal(runtime.__imt_sync_data, null);
   assert.notEqual(runtime.__imt_build_sync_snapshot().hash, pending.hash);
   assert.deepEqual(runtime.__getDashboardConfigCommits(), []);
   assert.equal(changes.length, 1);

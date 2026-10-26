@@ -14,6 +14,16 @@ const DOCUMENT_RUNTIME_STATUS_CHANNEL = "imt-document-runtime:download-status";
 const DOCUMENT_RUNTIME_OVERLAY_CHANNEL = "imt-document-runtime:handoff-overlay";
 const DOCUMENT_RUNTIME_ENGINE_STATE_KEY = "__imtDocumentRuntimeEngineState";
 const DOCUMENT_HANDOFF_OVERLAY_ID = "imt-document-handoff-overlay";
+const DOCUMENT_WORKSPACE_ORIGIN = "https://app.immersivetranslate.com";
+const IMT_API_HOSTS = new Set([
+  "api.immersivetranslate.com",
+  "api2.immersivetranslate.com",
+  "aigw1.immersivetranslate.com",
+]);
+const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000;
+const MAX_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+const TRANSLATED_PDF_MAX_BYTES = 512 * 1024 * 1024;
 
 function collectDocumentHandoffEvidence(doc, overlayId) {
   const id = typeof overlayId === "string" && overlayId ? overlayId : DOCUMENT_HANDOFF_OVERLAY_ID;
@@ -722,6 +732,7 @@ function createDocumentRuntimeBootstrap(options) {
 }
 
 module.exports = {
+  DEFAULT_REQUEST_TIMEOUT_MS,
   DOCUMENT_HANDOFF_OVERLAY_ID,
   DOCUMENT_RUNTIME_ACTION_CHANNEL,
   DOCUMENT_RUNTIME_BRIDGE_KEY,
@@ -731,6 +742,11 @@ module.exports = {
   DOCUMENT_RUNTIME_REQUEST_CHANNEL,
   DOCUMENT_RUNTIME_STATUS_CHANNEL,
   DOCUMENT_RUNTIME_WORLD_ID,
+  DOCUMENT_WORKSPACE_ORIGIN,
+  IMT_API_HOSTS,
+  MAX_REQUEST_BODY_BYTES,
+  MAX_REQUEST_TIMEOUT_MS,
+  TRANSLATED_PDF_MAX_BYTES,
   collectDocumentHandoffEvidence,
   createDocumentHandoffConfirmationSource,
   createDocumentRuntimeBootstrap,

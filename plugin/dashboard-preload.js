@@ -69,6 +69,35 @@ function sanitizeFullLocalUserConfig(value) {
   return safeConfig;
 }
 
+function serializeSafeSyncValue(key, rawValue, deps) {
+  const options = deps && typeof deps === "object" ? deps : {};
+  const prefix = typeof options.storePrefix === "string" && options.storePrefix ? options.storePrefix : GM_STORE_PREFIX;
+  const configKey = typeof options.configKey === "string" && options.configKey ? options.configKey : "fullLocalUserConfig";
+  const hasAuthToken = typeof options.hasAuthToken === "function" ? options.hasAuthToken : function () { return false; };
+  const sanitizeUserInfo = typeof options.sanitizeUserInfo === "function" ? options.sanitizeUserInfo : null;
+  let value = rawValue;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch (error) {}
+  }
+  if (key === prefix + "userInfo") {
+    if (!hasAuthToken() || !sanitizeUserInfo) return null;
+    value = sanitizeUserInfo(value);
+    if (!value) return null;
+  } else if (key === prefix + "subscriptionInfo") {
+    if (!hasAuthToken()) return null;
+    value = redactSyncValue(value, 0);
+  } else if (key === prefix + configKey) {
+    value = sanitizeFullLocalUserConfig(value);
+    if (!value) return null;
+  } else {
+    value = redactSyncValue(value, 0);
+  }
+  let serialized;
+  try { serialized = JSON.stringify(value); } catch (error) { return null; }
+  if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
+  return serialized;
+}
+
 function canonicalSyncSuffix(suffix) {
   if (suffix === "user_info") return "userInfo";
   if (suffix === "memberConfig") return "fullLocalUserConfig";
@@ -118,6 +147,7 @@ module.exports = {
   orderedSyncValues,
   redactSyncValue,
   sanitizeFullLocalUserConfig,
+  serializeSafeSyncValue,
 };
 
 return module.exports;
@@ -435,12 +465,6 @@ return module.exports;
     return result;
   }
 
-  function _initPkceHostBridge() {
-    try {
-      return !!(window.__imtDashboardHost && typeof window.__imtDashboardHost.request === "function");
-    } catch (e) { return false; }
-  }
-
   function _invokePkceHost(type, data) {
     var hostBridge;
     try { hostBridge = window.__imtDashboardHost; } catch (e) { hostBridge = null; }
@@ -568,7 +592,6 @@ return module.exports;
   function _invalidatePendingSyncSnapshot() {
     window.__imt_sync_pending_snapshot = null;
     window.__imt_sync_ack_hash = null;
-    window.__imt_sync_data = null;
   }
 
   function _storeFullLocalUserConfig(safeConfig) {
@@ -598,27 +621,12 @@ return module.exports;
   }
 
   function _serializeSafeSyncValue(key, rawValue) {
-    var value = rawValue;
-    if (typeof value === "string") {
-      try { value = JSON.parse(value); } catch (e) {}
-    }
-    if (key === P + "userInfo") {
-      if (!_hasStoredAuthToken()) return null;
-      value = sanitizeUserInfo(value, true);
-      if (!value) return null;
-    } else if (key === P + "subscriptionInfo") {
-      if (!_hasStoredAuthToken()) return null;
-      value = _redactSyncValue(value, 0);
-    } else if (key === P + "fullLocalUserConfig") {
-      value = _sanitizeFullLocalUserConfig(value);
-      if (!value) return null;
-    } else {
-      value = _redactSyncValue(value, 0);
-    }
-    var serialized;
-    try { serialized = JSON.stringify(value); } catch (e) { return null; }
-    if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
-    return serialized;
+    return syncProtocol.serializeSafeSyncValue(key, rawValue, {
+      storePrefix: P,
+      configKey: "fullLocalUserConfig",
+      hasAuthToken: _hasStoredAuthToken,
+      sanitizeUserInfo: function (value) { return sanitizeUserInfo(value, true); },
+    });
   }
 
   function _hashSyncPayload(values, deletedKeys) {
@@ -1174,20 +1182,26 @@ return module.exports;
     b1.style.cssText = "padding:10px 20px;background:#7c3aed;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,.3);font-weight:500";
     b1.textContent = "\u2b06 \u7acb\u5373\u540c\u6b65\u914d\u7f6e\u5230 Obsidian";
     b1.onclick = function () {
-      var snapshot = _buildSyncSnapshot();
-      if (!snapshot) {
-        b1.textContent = "\u26a0 \u540c\u6b65\u5931\u8d25";
-        return;
-      }
-      window.__imt_sync_data = JSON.stringify(snapshot);
-      b1.textContent = "\u2705 \u5df2\u51c6\u5907\u540c\u6b65";
-      b1.style.background = "#059669";
       b1.disabled = true;
-      setTimeout(function () {
+      var reset = function () {
         b1.textContent = "\u2b06 \u7acb\u5373\u540c\u6b65\u914d\u7f6e\u5230 Obsidian";
         b1.style.background = "#7c3aed";
         b1.disabled = false;
-      }, 3000);
+      };
+      _invokePkceHost("requestDashboardSync", {}).then(function (result) {
+        if (result && result.ok === true) {
+          b1.textContent = result.changed === true ? "\u2705 \u5df2\u540c\u6b65" : "\u2705 \u5df2\u662f\u6700\u65b0";
+          b1.style.background = "#059669";
+        } else {
+          b1.textContent = "\u26a0 \u540c\u6b65\u5931\u8d25";
+          b1.style.background = "#dc2626";
+        }
+        setTimeout(reset, 3000);
+      }, function () {
+        b1.textContent = "\u26a0 \u540c\u6b65\u5931\u8d25";
+        b1.style.background = "#dc2626";
+        setTimeout(reset, 3000);
+      });
     };
     c.appendChild(b1);
 
@@ -1412,7 +1426,6 @@ return module.exports;
   _ensureBridgeMetadata();
   // Preload can run before <head> exists; retry when the document has been built.
   try { document.addEventListener("DOMContentLoaded", _ensureBridgeMetadata); } catch (e) {}
-  _initPkceHostBridge();
   _installLocalStorageBridge();
   _installAuthenticatedAccountCloseGuard();
   _hydratePersistedAuthState();
@@ -1471,6 +1484,7 @@ return module.exports;
     submitPkceAuthCodeAsync: true,
     navigateTrustedDashboard: true,
     commitDashboardConfig: true,
+    requestDashboardSync: true,
   };
 
   function _hostFailure(code, message, retryable) {
@@ -1479,7 +1493,7 @@ return module.exports;
 
   function _normalizeHostRequest(type, data) {
     if (!Object.prototype.hasOwnProperty.call(HOST_REQUEST_TYPES, type)) return null;
-    if (type === "clearPkceSession" || type === "getOrCreatePkceChallengeAsync" || type === "getPersistedAuthState") return {};
+    if (type === "clearPkceSession" || type === "getOrCreatePkceChallengeAsync" || type === "getPersistedAuthState" || type === "requestDashboardSync") return {};
     if (!data || typeof data !== "object" || Array.isArray(data)) return null;
     if (type === "submitPkceAuthCodeAsync") {
       var requestId = typeof data.requestId === "string" ? data.requestId : "";

@@ -46,6 +46,10 @@ var IMTExtendedPlugin = (function () {
   var DOCUMENT_RUNTIME_REQUEST_CHANNEL = documentRuntime.DOCUMENT_RUNTIME_REQUEST_CHANNEL;
   var DOCUMENT_RUNTIME_STATUS_CHANNEL = documentRuntime.DOCUMENT_RUNTIME_STATUS_CHANNEL;
   var DOCUMENT_RUNTIME_WORLD_ID = documentRuntime.DOCUMENT_RUNTIME_WORLD_ID;
+  var DEFAULT_REQUEST_TIMEOUT_MS = documentRuntime.DEFAULT_REQUEST_TIMEOUT_MS;
+  var MAX_REQUEST_TIMEOUT_MS = documentRuntime.MAX_REQUEST_TIMEOUT_MS;
+  var MAX_REQUEST_BODY_BYTES = documentRuntime.MAX_REQUEST_BODY_BYTES;
+  var IMT_API_HOSTS = documentRuntime.IMT_API_HOSTS;
   var createDocumentRuntimeBootstrap = documentRuntime.createDocumentRuntimeBootstrap;
   var userscriptCompat = require("./userscript-compat");
   var OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE = userscriptCompat.OBSIDIAN_HOST_TRANSLATE_PAGE_MESSAGE;
@@ -74,7 +78,6 @@ var IMTExtendedPlugin = (function () {
   var PLUGIN_ID = "immersive-translate-extended";
   var PLUGIN_VERSION = "4.0.6";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
-  var DOCUMENT_RUNTIME_MAX_BODY_BYTES = 8 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_HEADER_BYTES = 64 * 1024;
   var DOCUMENT_PDF_CAPTURE_TIMEOUT_MS = 30 * 60 * 1000;
@@ -95,11 +98,6 @@ var IMTExtendedPlugin = (function () {
     "immersivetranslate.com": true,
     "app.immersivetranslate.com": true,
     "dash.immersivetranslate.com": true,
-    "api.immersivetranslate.com": true,
-    "api2.immersivetranslate.com": true,
-    "aigw1.immersivetranslate.com": true,
-  };
-  var IMT_AUTH_HOSTS = {
     "api.immersivetranslate.com": true,
     "api2.immersivetranslate.com": true,
     "aigw1.immersivetranslate.com": true,
@@ -287,7 +285,6 @@ var IMTExtendedPlugin = (function () {
     return changed;
   }
 
-  // The current userscript stores this field as targetLanguage; migrate the old SDK key at every write boundary.
   function _normalizeTargetLanguage(value) {
     if (typeof value !== "string") return "";
     var normalized = value.trim();
@@ -415,27 +412,12 @@ var IMTExtendedPlugin = (function () {
   }
 
   function _serializeSafeSyncValue(key, rawValue) {
-    var value = rawValue;
-    if (typeof value === "string") {
-      try { value = JSON.parse(value); } catch (e) {}
-    }
-    if (key === GM_STORE_PREFIX + "userInfo") {
-      if (!_hasPersistedAuthToken()) return null;
-      value = _sanitizeTrustedUserInfo(value);
-      if (!value) return null;
-    } else if (key === GM_STORE_PREFIX + "subscriptionInfo") {
-      if (!_hasPersistedAuthToken()) return null;
-      value = _redactSyncValue(value, 0);
-    } else if (key === GM_STORE_PREFIX + IMT_CONFIG_KEY) {
-      value = _sanitizeFullLocalUserConfig(value);
-      if (!value) return null;
-    } else {
-      value = _redactSyncValue(value, 0);
-    }
-    var serialized;
-    try { serialized = JSON.stringify(value); } catch (e) { return null; }
-    if (typeof serialized !== "string" || serialized.length > SYNC_MAX_VALUE_BYTES) return null;
-    return serialized;
+    return syncProtocol.serializeSafeSyncValue(key, rawValue, {
+      storePrefix: GM_STORE_PREFIX,
+      configKey: IMT_CONFIG_KEY,
+      hasAuthToken: _hasPersistedAuthToken,
+      sanitizeUserInfo: _sanitizeTrustedUserInfo,
+    });
   }
 
   function _parseHttpUrl(value) {
@@ -470,7 +452,7 @@ var IMTExtendedPlugin = (function () {
 
   function _shouldAttachImtAuthToken(value) {
     var url = _parseHttpUrl(value);
-    return !!(url && url.protocol === "https:" && Object.prototype.hasOwnProperty.call(IMT_AUTH_HOSTS, url.hostname.toLowerCase()));
+    return !!(url && url.protocol === "https:" && IMT_API_HOSTS.has(url.hostname.toLowerCase()));
   }
 
   function _encodeUtf8(value) { return new TextEncoder().encode(String(value)); }
@@ -726,21 +708,21 @@ var IMTExtendedPlugin = (function () {
     var body;
     if (method !== "GET" && method !== "HEAD" && input.body) {
       if (input.body.type === "text" && typeof input.body.data === "string") {
-        if (Buffer.byteLength(input.body.data, "utf8") > DOCUMENT_RUNTIME_MAX_BODY_BYTES) return Promise.resolve({ ok: false, code: "invalid_body" });
+        if (Buffer.byteLength(input.body.data, "utf8") > MAX_REQUEST_BODY_BYTES) return Promise.resolve({ ok: false, code: "invalid_body" });
         body = input.body.data;
       } else if (input.body.type === "base64" && typeof input.body.data === "string") {
-        if (input.body.data.length > Math.ceil(DOCUMENT_RUNTIME_MAX_BODY_BYTES * 4 / 3) + 4) return Promise.resolve({ ok: false, code: "invalid_body" });
+        if (input.body.data.length > Math.ceil(MAX_REQUEST_BODY_BYTES * 4 / 3) + 4) return Promise.resolve({ ok: false, code: "invalid_body" });
         try {
           var binaryBody = Buffer.from(input.body.data, "base64");
-          if (binaryBody.byteLength > DOCUMENT_RUNTIME_MAX_BODY_BYTES) return Promise.resolve({ ok: false, code: "invalid_body" });
+          if (binaryBody.byteLength > MAX_REQUEST_BODY_BYTES) return Promise.resolve({ ok: false, code: "invalid_body" });
           body = binaryBody.buffer.slice(binaryBody.byteOffset, binaryBody.byteOffset + binaryBody.byteLength);
         } catch (e) { return Promise.resolve({ ok: false, code: "invalid_body" }); }
       } else return Promise.resolve({ ok: false, code: "invalid_body" });
     }
 
     var timeout = Number(input.timeout);
-    if (!Number.isFinite(timeout) || timeout <= 0) timeout = 30 * 1000;
-    timeout = Math.min(Math.floor(timeout), 2 * 60 * 1000);
+    if (!Number.isFinite(timeout) || timeout <= 0) timeout = DEFAULT_REQUEST_TIMEOUT_MS;
+    timeout = Math.min(Math.floor(timeout), MAX_REQUEST_TIMEOUT_MS);
     return new Promise(function (resolve) {
       var settled = false;
       var finish = function (payload) {
@@ -1990,6 +1972,15 @@ var IMTExtendedPlugin = (function () {
         try { dashboardWindow.webContents.send(pkceChannel + ":response", { id: id, type: type, payload: navigationPayload }); } catch (e) {}
         return;
       }
+      if (type === "requestDashboardSync") {
+        Promise.resolve(pluginInstance._syncDashboardConfig({ silent: true })).catch(function () {
+          return { ok: false, changed: false, code: "sync_failed" };
+        }).then(function (payload) {
+          if (!isCurrentDashboard()) return;
+          try { dashboardWindow.webContents.send(pkceChannel + ":response", { id: id, type: type, payload: payload }); } catch (e) {}
+        });
+        return;
+      }
       if (type === "commitDashboardConfig") {
         Promise.resolve(pluginInstance._commitDashboardConfig(message.data && message.data.config)).then(function (payload) {
           if (!isCurrentDashboard()) return;
@@ -2221,9 +2212,9 @@ var IMTExtendedPlugin = (function () {
     var snapshot = { version: 1, scope: SYNC_SCOPE_DASHBOARD, revision: "dashboard-ipc-" + Date.now(), values: values, deletedKeys: [] };
     snapshot.hash = _hashSyncPayload(values, []);
     var pluginInstance = this; var generation = this._syncGeneration;
-    return this._applySyncData(JSON.stringify(snapshot), generation, SYNC_SCOPE_DASHBOARD).then(function (changed) {
+    return this._applySyncDataResult(JSON.stringify(snapshot), generation, SYNC_SCOPE_DASHBOARD).then(function (result) {
       if (!pluginInstance._isActiveSyncGeneration(generation)) return { ok: false, code: "stale_dashboard" };
-      return { ok: true, changed: changed === true };
+      return { ok: result.ok, changed: result.changed };
     }).catch(function () { return { ok: false, code: "config_commit_failed" }; });
   };
 
@@ -2247,7 +2238,7 @@ var IMTExtendedPlugin = (function () {
     this._syncReadInFlight = true;
     try {
       dashboardWindow.webContents.executeJavaScript(
-        "(function(){try{return window.__imt_sync_data||(window.__imt_build_sync_snapshot?JSON.stringify(window.__imt_build_sync_snapshot()):null)}catch(e){return null}})()"
+        "(function(){try{return window.__imt_build_sync_snapshot?JSON.stringify(window.__imt_build_sync_snapshot()):null}catch(e){return null}})()"
       ).then(function (dataStr) {
         if (!pluginInstance._isActiveSyncGeneration(generation) || pluginInstance._dashboardWindow !== dashboardWindow) return false;
         if (dataStr) {
@@ -2325,7 +2316,7 @@ var IMTExtendedPlugin = (function () {
     if (!this._isActiveSyncGeneration(generation)) return;
     try {
       if (this._dashboardWindow && !this._dashboardWindow.isDestroyed()) {
-        var script = "window.__imt_sync_ack_hash=" + JSON.stringify(String(hash)) + ";window.__imt_sync_data=null";
+        var script = "window.__imt_sync_ack_hash=" + JSON.stringify(String(hash));
         var result = this._dashboardWindow.webContents.executeJavaScript(script);
         if (result && typeof result.catch === "function") result.catch(function () {});
       }
@@ -2399,37 +2390,54 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._queueSyncSnapshot = function (snapshot, generation) {
     if (generation === undefined) generation = this._syncGeneration;
-    if (!this._isActiveSyncGeneration(generation)) return Promise.resolve(false);
-    if (snapshot.hash === this._lastSyncHash) { this._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return Promise.resolve(false); }
+    if (!this._isActiveSyncGeneration(generation)) return Promise.resolve({ ok: false, changed: false, code: "stale_dashboard" });
+    if (snapshot.hash === this._lastSyncHash) { this._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return Promise.resolve({ ok: true, changed: false, code: "unchanged" }); }
     var pluginInstance = this;
     this._syncApplyChain = this._syncApplyChain.catch(function () {}).then(function () {
-      if (!pluginInstance._isActiveSyncGeneration(generation)) return false;
-      if (snapshot.hash === pluginInstance._lastSyncHash) { pluginInstance._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return false; }
+      if (!pluginInstance._isActiveSyncGeneration(generation)) return { ok: false, changed: false, code: "stale_dashboard" };
+      if (snapshot.hash === pluginInstance._lastSyncHash) { pluginInstance._ackSyncSnapshot(snapshot.ackHash || snapshot.hash, generation); return { ok: true, changed: false, code: "unchanged" }; }
       return Promise.resolve(pluginInstance._commitSyncSnapshot(snapshot, generation)).then(function (result) {
-        if (result !== null) pluginInstance._lastSyncHash = snapshot.hash;
-        return result === true;
+        if (result === null) return { ok: false, changed: false, code: "commit_failed" };
+        pluginInstance._lastSyncHash = snapshot.hash;
+        return { ok: true, changed: result === true, code: result === true ? "" : "unchanged" };
       });
-    });
+    }).catch(function () { return { ok: false, changed: false, code: "commit_failed" }; });
     return this._syncApplyChain;
   };
 
-  IMTExtendedPluginClass.prototype._applySyncData = function (dataStr, generation, scopeOverride) {
+  IMTExtendedPluginClass.prototype._applySyncDataResult = function (dataStr, generation, scopeOverride, silent) {
     if (generation === undefined) generation = this._syncGeneration;
-    if (!this._isActiveSyncGeneration(generation)) return Promise.resolve(false);
+    if (!this._isActiveSyncGeneration(generation)) return Promise.resolve({ ok: false, changed: false, code: "stale_dashboard" });
     var snapshot;
-    try { snapshot = this._prepareSyncSnapshot(dataStr, scopeOverride); } catch (e) { console.warn("[IMT-Extended] Sync rejected:", e); new obsidian.Notice("同步失败：配置格式或校验无效"); return Promise.resolve(false); }
+    try {
+      snapshot = this._prepareSyncSnapshot(dataStr, scopeOverride);
+    } catch (e) {
+      if (!silent) {
+        console.warn("[IMT-Extended] Sync rejected:", e);
+        new obsidian.Notice("同步失败：配置格式或校验无效");
+      }
+      return Promise.resolve({ ok: false, changed: false, code: "invalid_snapshot" });
+    }
     return this._queueSyncSnapshot(snapshot, generation);
   };
 
-  IMTExtendedPluginClass.prototype._syncDashboardConfig = async function () {
-    if (!this._dashboardWindow || this._dashboardWindow.isDestroyed()) { new obsidian.Notice("请先打开 Dashboard"); return false; }
+  IMTExtendedPluginClass.prototype._applySyncData = function (dataStr, generation, scopeOverride) {
+    return this._applySyncDataResult(dataStr, generation, scopeOverride, false).then(function (result) {
+      return result.ok ? result.changed : false;
+    });
+  };
+
+  IMTExtendedPluginClass.prototype._syncDashboardConfig = async function (options) {
+    var silent = !!(options && options.silent === true);
+    var notify = function (message) { if (!silent) new obsidian.Notice(message); };
+    if (!this._dashboardWindow || this._dashboardWindow.isDestroyed()) { notify("请先打开 Dashboard"); return { ok: false, changed: false, code: "dashboard_unavailable" }; }
     var dashboardWindow = this._dashboardWindow; var generation = this._syncGeneration;
     try {
-      var d = await dashboardWindow.webContents.executeJavaScript("(function(){try{return window.__imt_sync_data||(window.__imt_build_sync_snapshot?JSON.stringify(window.__imt_build_sync_snapshot()):null)}catch(e){return null}})()");
-      if (!this._isActiveSyncGeneration(generation) || this._dashboardWindow !== dashboardWindow) return false;
-      if (!d) { new obsidian.Notice("请先在 Dashboard 中点击「同步到 Obsidian」"); return false; }
-      return await this._applySyncData(d, generation, SYNC_SCOPE_DASHBOARD);
-    } catch (e) { new obsidian.Notice("同步失败"); return false; }
+      var d = await dashboardWindow.webContents.executeJavaScript("(function(){try{return window.__imt_build_sync_snapshot?JSON.stringify(window.__imt_build_sync_snapshot()):null}catch(e){return null}})()");
+      if (!this._isActiveSyncGeneration(generation) || this._dashboardWindow !== dashboardWindow) return { ok: false, changed: false, code: "stale_dashboard" };
+      if (!d) { notify("无法读取 Dashboard 同步快照，请确认页面已加载"); return { ok: false, changed: false, code: "no_snapshot" }; }
+      return await this._applySyncDataResult(d, generation, SYNC_SCOPE_DASHBOARD, silent);
+    } catch (e) { notify("同步失败"); return { ok: false, changed: false, code: "sync_failed" }; }
   };
 
   // Export uses the same bounded, redacted envelope as Dashboard sync so a copied file cannot become an unbounded credential dump.
@@ -2461,7 +2469,8 @@ var IMTExtendedPlugin = (function () {
     try {
       var snapshot = this._prepareSyncSnapshot(jsonStr);
       if (Object.keys(snapshot.values).length === 0 && snapshot.deletedKeys.length === 0) { new obsidian.Notice("未找到有效配置"); return false; }
-      return await this._queueSyncSnapshot(snapshot);
+      var result = await this._queueSyncSnapshot(snapshot);
+      return result.ok;
     } catch (e) { new obsidian.Notice("导入失败：JSON 格式、大小或校验无效"); return false; }
   };
 
