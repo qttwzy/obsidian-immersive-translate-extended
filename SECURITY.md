@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published 4.0.x prerelease. Reproduce reports on the latest available version when possible.
+Security fixes are provided for the latest stable release. Reproduce reports on that version when possible; include the affected version even when a safe reproduction requires an older release.
 
 ## Report a vulnerability
 

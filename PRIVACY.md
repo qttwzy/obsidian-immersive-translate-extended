@@ -1,12 +1,12 @@
 # Privacy
 
-Last updated: 2026-09-05
+Last updated: 2026-10-31
 
-This notice describes Immersive Translate Extended 4.0.2 for Obsidian Desktop. The plugin is an unofficial community project and does not operate the translation services it connects to.
+This notice describes Immersive Translate Extended 4.0.7 for Obsidian Desktop. The plugin is an unofficial community project and does not operate the translation services it connects to.
 
 ## What leaves your device
 
-Opening plugin settings requests the current script from `https://download.immersivetranslate.com/immersive-translate.user.js` so the plugin can parse and display its version metadata. The script is written to the plugin directory only when you choose Install or Update.
+Opening plugin settings requests the current script from `https://download.immersivetranslate.com/immersive-translate.user.js` so the plugin can parse and display its version metadata. The script is written to the plugin directory only when you choose Install or Update. The install-verified-version action additionally fetches the pinned script from the matching tag of the official Immersive Translate GitHub Release.
 
 Translation is an intentional network action. Depending on the provider and runtime configuration, the following data may be sent to Immersive Translate endpoints and the selected translation provider:
 
@@ -20,6 +20,8 @@ The recipient, processing region, retention period, account terms, and paid-serv
 
 The PDF/document workspace runs in an isolated window restricted to trusted `https://app.immersivetranslate.com` document routes. Opening a PDF translation attempts to hand the checked local file to that workspace; manual selection is used for other supported formats and as the fallback. Saving a translated PDF is a separate user action.
 
+Opening the account Dashboard connects to the official Immersive Translate account pages for sign-in, account management, and advanced-setting synchronization.
+
 ## Local storage
 
 The plugin stores host-level options in the plugin's `data.json` and stores the user-installed runtime as `userscript.runtime.js` in the local plugin directory. The runtime uses Obsidian's Web storage for translation configuration and may store provider credentials there when the user configures a service. When you save a translated PDF, the plugin writes it beside the source file with a distinct translated filename.
@@ -28,7 +30,7 @@ The safe configuration export is user initiated. It limits accepted fields, item
 
 ## Project telemetry and diagnostics
 
-The 4.0.2 plugin code does not add a project-operated analytics or crash-reporting service. The user-installed runtime and chosen translation providers may perform their own service requests as described above.
+The 4.0.7 plugin code does not add a project-operated analytics or crash-reporting service. The user-installed runtime and chosen translation providers may perform their own service requests as described above.
 
 Console errors and user-created diagnostic material can still contain note excerpts, local paths, plugin names, service responses, or account context. Redact those items before opening a public issue. Never submit passwords, cookies, authorization headers, API keys, tokens, or private notes.
 

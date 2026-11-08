@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version from package.json to publish as a prerelease
+        description: Version from package.json to publish as a stable release
         required: true
         type: string
 
@@ -44,7 +44,7 @@ jobs:
       - name: Build release ZIP
         run: npm run package:build -- --root "$PWD" --out "$RUNNER_TEMP/plugin-package"
 
-      - name: Publish prerelease
+      - name: Publish stable release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
@@ -56,4 +56,4 @@ jobs:
           [Corresponding source and build scripts](https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/v$RELEASE_VERSION.zip) · [Browse the source](https://github.com/$GITHUB_REPOSITORY/tree/v$RELEASE_VERSION).
           Third-party components retain their own terms; see THIRD_PARTY_NOTICES.md in the ZIP.
           EOF
-          gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP/plugin-package/immersive-translate-extended-$RELEASE_VERSION.zip" --target "$GITHUB_SHA" --prerelease --title "Immersive Translate Extended $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP/plugin-package/immersive-translate-extended-$RELEASE_VERSION.zip" --target "$GITHUB_SHA" --title "Immersive Translate Extended $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"

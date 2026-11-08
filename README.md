@@ -13,6 +13,8 @@ Immersive Translate, extended into your vault.
 
 ### 功能范围
 
+项目自 4.0.7 起按正式版维护和发布，日常安装与升级使用最新正式版的完整 ZIP。宿主和运行时兼容范围以已验证记录为准。
+
 | 能力 | 4.0.x 范围 |
 | --- | --- |
 | Markdown 阅读视图 | 从悬浮球启动整页双语或仅译文翻译 |
@@ -35,7 +37,7 @@ Immersive Translate, extended into your vault.
 
 ### 安装
 
-从 [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases) 下载 `immersive-translate-extended-<version>.zip`。
+从 [GitHub Releases 最新正式版](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases/latest) 下载 `immersive-translate-extended-<version>.zip`。
 
 1. 解压 ZIP。
 2. 把其中的 `immersive-translate-extended/` 文件夹放到 `<你的 Vault>/.obsidian/plugins/immersive-translate-extended/`。
@@ -83,6 +85,22 @@ Use the Immersive Translate floating ball, selection translation, Markdown bilin
 
 This is an unofficial, community-maintained Obsidian plugin. It is not affiliated with or endorsed by Obsidian, Immersive Translate, or any translation provider. Their names and trademarks belong to their respective owners.
 
+### Feature scope
+
+Starting with 4.0.7, the project maintains and publishes stable releases. Use the complete ZIP from the latest stable release for routine installation and upgrades. Host and runtime compatibility remain bounded by the recorded verification results.
+
+| Capability | 4.0.x scope |
+| --- | --- |
+| Markdown Reading View | Start bilingual or translation-only page translation from the floating ball |
+| Selection and hover | Translate selected or hovered text through the locally installed runtime |
+| Translation scope | Control Obsidian UI regions and Reading View content separately; editors keep the source text |
+| Host popouts | Settings, community plugin, and community theme windows share the main window's target language, provider, and bilingual or translation-only state |
+| Configuration transfer | Import or export a configuration bounded by field and size limits; credential-like fields are filtered |
+| Conflict handling | Detect overlapping translation capabilities and let the user decide whether to pause them |
+| Account and Dashboard | Review account status and open an isolated Dashboard to sign in, manage the account, and synchronize advanced settings |
+| PDF and documents | Open the official document workspace from the PDF view; other supported formats can be selected manually in the workspace |
+| Runtime setup | Settings show the local, current official, and plugin-verified versions; install or update from the official source, or install the verified version. After an official runtime update, automatic translation and partial re-translation in the Settings window turn off, with a prompt to install the verified version or wait for a plugin update |
+
 ### Requirements
 
 - Obsidian Desktop `1.12.7` or newer.
@@ -91,11 +109,23 @@ This is an unofficial, community-maintained Obsidian plugin. It is not affiliate
 
 ### Install
 
-Download `immersive-translate-extended-<version>.zip` from [GitHub Releases](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install or update the translation runtime from plugin settings when needed, or choose the verified-version action to return to the runtime version this plugin has verified. With UI translation enabled and the main window in bilingual or translation-only mode, detached Settings and community plugin or theme windows follow that same translation state.
+Download `immersive-translate-extended-<version>.zip` from the [latest stable GitHub Release](https://github.com/qttwzy/obsidian-immersive-translate-extended/releases/latest), extract it, and place the included `immersive-translate-extended/` directory at `<your vault>/.obsidian/plugins/immersive-translate-extended/`. Restart Obsidian, enable the plugin under Settings → Community plugins, then install or update the translation runtime from plugin settings when needed, or choose the verified-version action to return to the runtime version this plugin has verified.
 
 An installation progress indicator shows the current stage: checking, downloading, validating, writing, or activating. Failed installations can be retried. Updating an already running engine still requires an Obsidian restart. The verified-version action fetches the script from the matching tag of the official GitHub Release and checks its `@version` before writing; automatic translation and partial re-translation in Settings and other host windows only run on the runtime version this plugin has verified. Updating the official runtime first turns them off; the plugin says so once at startup and in its settings, and you can install the runtime version it has verified and restart Obsidian, or wait for a plugin update.
 
 The ZIP contains `main.js`, `dashboard-preload.js`, `document-preload.js`, `document-runtime.js`, `gm-element.js`, `gm-headers.js`, `gm-request-body.js`, `gm-response-value.js`, `manifest.json`, `styles.css`, `LICENSE`, and `THIRD_PARTY_NOTICES.md`. The translation runtime is installed locally from the official source through plugin settings.
+
+### Use
+
+1. Open a Markdown note in Reading View.
+2. Use the floating ball to select a target language, provider, and bilingual or translation-only mode.
+3. Select or hover text for focused translation.
+4. Use plugin settings to control UI and Reading View translation scopes separately.
+5. Under Account and advanced settings, review account status or open the Dashboard to sign in and synchronize advanced settings.
+6. Open a PDF in the Vault and use the languages icon in the PDF view header to enter the official PDF workspace; you can also open the document translation workspace from the command palette and select a supported file manually.
+7. Open a detached Settings window or the community plugin or theme browser; interface translation follows the main window's bilingual or translation-only state.
+
+Starting page translation from an editing or live-preview mode temporarily enters Reading View. Stopping translation restores the prior mode; translated output does not overwrite Markdown source.
 
 ### Source and contributions
 

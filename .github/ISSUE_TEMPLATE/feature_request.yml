@@ -32,7 +32,7 @@ body:
     attributes:
       label: Scope check
       options:
-        - label: I reviewed README.md and SUPPORT.md for the current public-beta boundary.
+        - label: I reviewed README.md and SUPPORT.md for the supported product scope.
           required: true
         - label: I removed private content and secrets from this request.
           required: true

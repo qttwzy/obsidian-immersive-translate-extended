@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible defect in the supported public-beta scope
+description: Report a reproducible defect in the supported stable release
 title: "[Bug]: "
 labels:
   - bug
@@ -13,7 +13,7 @@ body:
     attributes:
       label: Plugin version
       description: Use the version shown in manifest.json or Obsidian settings.
-      placeholder: 4.0.2
+      placeholder: 4.0.7
     validations:
       required: true
   - type: input
@@ -39,8 +39,8 @@ body:
     attributes:
       label: Installation path
       options:
-        - Fresh install from complete Pre-release ZIP
-        - Upgrade using complete Pre-release ZIP
+        - Fresh install from complete stable release ZIP
+        - Upgrade using complete stable release ZIP
         - Other
     validations:
       required: true
@@ -74,9 +74,9 @@ body:
     attributes:
       label: Pre-submission checks
       options:
-        - label: I installed the complete ZIP from the latest GitHub prerelease.
+        - label: I installed the complete ZIP from the latest stable GitHub Release.
           required: true
-        - label: I reproduced this on the latest published beta.
+        - label: I reproduced this on the latest stable release.
           required: true
         - label: I removed private note content, paths, identities, and secrets.
           required: true

@@ -55,6 +55,26 @@ test("keeps the installed userscript when a download has no version metadata", (
   assert.equal(fs.readFileSync(path.join(pluginDir, RUNTIME_FILENAME), "utf8"), RUNTIME_SOURCE);
 });
 
+test("an HTTP 200 CDN error page never replaces the installed userscript", (t) => {
+  const pluginDir = createPluginDir(t);
+  installRuntime({ pluginDir, content: RUNTIME_SOURCE });
+
+  // Mirrors the 2026-11-07 CDN outage shape: R2 returns HTTP 200 with an HTML
+  // "Object not found" page wrapped in JavaScript content-type.
+  const cdnErrorPage = [
+    "<!DOCTYPE html>",
+    "<html>",
+    "<head><title>Object not found</title></head>",
+    "<body><h1>Object not found</h1><p>The object you requested could not be found.</p></body>",
+    "</html>",
+    "",
+  ].join("\n");
+
+  assert.throws(() => installRuntime({ pluginDir, content: cdnErrorPage }), /version/i);
+  assert.equal(fs.readFileSync(path.join(pluginDir, RUNTIME_FILENAME), "utf8"), RUNTIME_SOURCE);
+  assert.equal(fs.readdirSync(pluginDir).filter((name) => name.includes(".installing")).length, 0);
+});
+
 test("requires one version inside one complete userscript metadata block", (t) => {
   const pluginDir = createPluginDir(t);
   const ambiguous = "// ==UserScript==\n// @version 9.7.3\n// @version 9.8.0\n// ==/UserScript==\n";
