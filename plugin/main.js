@@ -3246,12 +3246,13 @@ function patchUserscriptHostContentBridge(source) {
 
 // This bridge is installed after the host content bridge and lifecycle guard.
 // Keep the upstream engine's paragraph callback by calling its own bounded
-// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3, $M in 1.34.1 and 1.34.4).
+// traversal wrapper (w9/A9 in 1.33.x, $M in 1.34.x, z8 in 1.35.1).
 const REGION_BRIDGE_SHAPES = {
   "1.33.2": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "w9", traverse: "Ap", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.33.3": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "A9", traverse: "Mp", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.34.x": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Of", timing: "pf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
   "1.34.4": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Ff", timing: "hf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
+  "1.35.1": { engine: "Qe", marks: "wr", stopped: "bi", wrapper: "z8", traverse: "A0", timing: "r0", context: "Xi", entryCondition: "bi()||n?.shouldContinue?.()===!1" },
 };
 
 function patchUserscriptHostRegionBridge(source) {
@@ -3325,7 +3326,8 @@ function patchUserscriptHostRegionBridge(source) {
           for(const candidate of candidates){
             if(!current())return{success:false,error:"stale-host-policy"};
             if(root.ownerDocument!==document||!root.isConnected||candidate.ownerDocument!==document||!candidate.isConnected||!root.contains(candidate))return{success:false,error:"region-detached"};
-            await ${expectedWrapper}(engine,candidate,{shouldParseParagraph:()=>({shouldParse:current()&&root.ownerDocument===document&&root.isConnected&&candidate.ownerDocument===document&&candidate.isConnected&&root.contains(candidate)})},"dynamic");
+            const shouldContinue=()=>current()&&root.ownerDocument===document&&root.isConnected&&candidate.ownerDocument===document&&candidate.isConnected&&root.contains(candidate);
+            await ${expectedWrapper}(engine,candidate,{shouldContinue,shouldParseParagraph:()=>({shouldParse:shouldContinue()})},"dynamic");
             if(!current())return{success:false,error:"stale-host-policy"};
             if(root.ownerDocument!==document||!root.isConnected||candidate.ownerDocument!==document||!candidate.isConnected||!root.contains(candidate))return{success:false,error:"region-detached"};
             scanned++;
@@ -3379,8 +3381,8 @@ function patchLegacyHostRegionBridge(source) {
   return { source: withHelper.replace(translate[0][0], translate[0][0] + branch), changed: true, reason: "patched" };
 }
 
-// These lifecycle boundaries were inspected in the official 1.33.2, 1.33.3,
-// 1.34.1 and 1.34.4 runtimes. Capture minified names, but require the profile's
+// These lifecycle boundaries were inspected in the registered official
+// 1.33.x, 1.34.x and 1.35.1 runtimes. Capture names, but require the profile's
 // full call shape before editing a source.
 const LIFECYCLE_GUARD_SHAPE_133 = {
   parser: new RegExp("function (" + JS_IDENTIFIER + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0\\}"),
@@ -3416,11 +3418,21 @@ const LIFECYCLE_GUARD_SHAPE_1344 = {
   ...LIFECYCLE_GUARD_SHAPE_134,
   invocation: new RegExp(escapeRegExp('await Xa("translatePage")(r,{trigger:yQ(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
 };
+const LIFECYCLE_GUARD_SHAPE_1351 = {
+  ...LIFECYCLE_GUARD_SHAPE_134,
+  page: new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t\\)\\{let n=t\\?\\.enableObserver===!1\\?W8\\(\\):void 0;try\\{let r=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"),
+  invocation: new RegExp(escapeRegExp('await js("translatePage")(r,{trigger:XX(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
+  pagePreamble: function (parser) { return "let a=e,{state:s,trigger:l,startedAt:u,documentTerminologyInput:c,enableObserver:d}=" + parser + "(t),g=typeof l==\"string\"?l:\"unknown\";"; },
+  initialCheck: /finally\{m=\(globalThis\.performance\?\.now\?\.\(\)\?\?Date\.now\(\)\)-v\}\}if\(!([A-Za-z_$][A-Za-z0-9_$]*)/,
+  beforeGate: function (gate) { return new RegExp("if\\(" + JS_IDENTIFIER + "\\(a\\),await " + JS_IDENTIFIER + "\\(a,g,f\\)\\|\\|await " + JS_IDENTIFIER + "\\(a,f\\)\\)return;let h,b=await " + escapeRegExp(gate) + "\\(\\{"); },
+  recursionTail: "...d===!1?{enableObserver:!1}:{}})};",
+};
 const LIFECYCLE_GUARD_SHAPES = {
   "1.33.2": LIFECYCLE_GUARD_SHAPE_133,
   "1.33.3": LIFECYCLE_GUARD_SHAPE_133,
   "1.34.x": LIFECYCLE_GUARD_SHAPE_134,
   "1.34.4": LIFECYCLE_GUARD_SHAPE_1344,
+  "1.35.1": LIFECYCLE_GUARD_SHAPE_1351,
 };
 function patchUserscriptHostLifecycleGuard(source) {
   if (typeof source !== "string") return unchanged(source, "invalid-source");
@@ -3468,10 +3480,10 @@ function patchUserscriptHostLifecycleGuard(source) {
   const handlerStart = handlerStarts.at(-1);
   if (!handlerStart || contextMatches[0].index - handlerStart.index > 4096) return unchanged(source, "ambiguous-anchor");
   const starts = [gateMatches[0], handlerStart, parserMatches[0], pageMatches[0]];
-  const restoreCalls = findPatternMatches(source, /preparePreviousPage:async\(\)=>\{[A-Za-z_$][A-Za-z0-9_$]*\(\)!=="Original"&&await ([A-Za-z_$][A-Za-z0-9_$]*)\(\)\}/);
+  const restoreCalls = findPatternMatches(source, /preparePreviousPage:async\(\)=>\{[A-Za-z_$][A-Za-z0-9_$]*\(\)!=="Original"&&await ([A-Za-z_$][A-Za-z0-9_$]*)\((?:!0)?\)\}/);
   if (restoreCalls.length !== 1) return unchanged(source, "ambiguous-anchor");
   const restoreName = restoreCalls[0][1];
-  const restoreStarts = findPatternMatches(source, new RegExp("async function " + restoreName.replace(/\$/g, "\\$") + "\\(\\)\\{"));
+  const restoreStarts = findPatternMatches(source, new RegExp("async function " + restoreName.replace(/\$/g, "\\$") + "\\((?:e=!1)?\\)\\{"));
   if (restoreStarts.length !== 1) return unchanged(source, "ambiguous-anchor");
   starts.push(restoreStarts[0]);
   const limits = [1024, 4096, 2048, 12000, 4096];
@@ -3498,7 +3510,7 @@ function patchUserscriptHostLifecycleGuard(source) {
   const invocation = findPatternMatches(edits[1].text, shape.invocation);
   const initialCheck = findPatternMatches(edits[3].text, shape.initialCheck);
   const beforeGate = findPatternMatches(edits[3].text, shape.beforeGate(gate));
-  const restoreContext = findPatternMatches(edits[4].text, /let e=await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*\(\),\{\}\);/);
+  const restoreContext = findPatternMatches(edits[4].text, /let [et]=await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*\(\),\{\}\);/);
   if ([invocation, initialCheck, beforeGate, restoreContext].some((matches) => matches.length !== 1)) return unchanged(source, "anchor-not-found");
 
   function replaceInSection(index, oldText, newText) {
@@ -3528,7 +3540,7 @@ function patchUserscriptHostLifecycleGuard(source) {
       'onRetry:()=>(' + page + '(e,{...t,...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}}),!0)'],
     [3, beforeGate[0][0], beforeGate[0][0].replace(shape.beforeGateInsert[0], shape.beforeGateInsert[1]).replace("({", "({isCurrent:__imtHostCurrent,")],
     [3, shape.gateResult[0], shape.gateResult[1]],
-    [4, "async function " + restoreName + "(){", "async function " + restoreName + "(){let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;"],
+    [4, restoreStarts[0][0], restoreStarts[0][0] + "let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;"],
     [4, restoreContext[0][0], restoreContext[0][0] + "if(__imtHostRestorePolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostRestorePolicy||__imtHostRestorePolicy.generation!==__imtHostRestoreGeneration))return;"],
   ];
   replacements[8][1] = 'onRetry:()=>(' + page + '(e,t),!0)';
@@ -3595,7 +3607,7 @@ const RUNTIME_FILENAME = "userscript.runtime.js";
 // The version the plugin installs when a user returns to a verified runtime.
 // It stays an explicit value: a version that is partly compatible must not
 // change what "install the verified version" restores.
-const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
+const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.35.1";
 
 // Verified official-runtime compatibility declarations; see docs/RUNTIME.md.
 // One entry per official runtime version the plugin has verified, naming the
@@ -3609,6 +3621,12 @@ const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
 // were confirmed to hold across the family, and each one still has to pass its
 // own anchor probe.
 const RUNTIME_COMPAT_MATRIX = [
+  {
+    version: "1.35.1",
+    profile: "1.35.1",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
   {
     version: "1.34.4",
     profile: "1.34.4",
@@ -3965,7 +3983,7 @@ var IMTExtendedPlugin = (function () {
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
 
   var PLUGIN_ID = "immersive-translate-extended";
-  var PLUGIN_VERSION = "4.0.7";
+  var PLUGIN_VERSION = "4.0.8";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_HEADER_BYTES = 64 * 1024;
@@ -4346,64 +4364,63 @@ var IMTExtendedPlugin = (function () {
 
   function _encodeUtf8(value) { return new TextEncoder().encode(String(value)); }
 
-  function IMTExtendedPluginClass(app, manifest) {
-    obsidian.Plugin.call(this, app, manifest);
-    this.settings = Object.assign({}, DEFAULT_SETTINGS);
-    this._i18nDisabled = false;
-    this._i18nConflictState = null;
-    this._initialized = false;
-    this._isUnloaded = true; this._activationGeneration = 0;
-    this._startupTimers = []; this._globalPatches = []; this._gmStyleElements = [];
-    this._windowRuntimeLedger = createWindowRuntimeLedger();
-    this._externalScripts = []; this._originalWindowOpen = null;
-    this._loadedUserscriptVersion = ""; this._installedRuntime = null; this._runtimeInstallPromise = null; this._runtimeInstallGeneration = 0;
-    this._runtimeInstallPhase = ""; this._runtimeInstallError = ""; this._latestRuntimeSource = ""; this._latestRuntimeSourceVersion = "";
-    this._latestRuntimeVersion = ""; this._runtimeVersionCheckState = "idle"; this._runtimeVersionCheckedAt = 0; this._runtimeVersionCheckPromise = null; this._runtimeVersionCheckGeneration = 0;
-    this._patchedWindowOpen = null;
-    this._dashboardWindow = null; this._syncPollTimer = null; this._providerLoginGuideModal = null;
-    this._documentSession = createDocumentSession();
-    this._translationViewBridge = null;
-    this._hostWindowRuntimeManager = null;
-    this._hostWindowUserscriptSource = "";
-    this._hostWindowUserscriptBridgeReady = null;
-    this._hostBridgeReady = null;
-    this._runtimeCompatibilityNoticeKey = "";
-    this._configRestoreDepth = 0;
-    this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
-    this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
-    this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
-    this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
-    this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
-    this._translationIntentSequence = 0;
-    this._lastHostTranslationState = undefined;
-    this._userscriptRequestSequence = 0;
-    this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
-    this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
-    var pluginInstance = this;
-    this._dashboardPkceHost = createDashboardPkceHost({
-      request: function (options) { return obsidian.requestUrl(options); },
-      sanitizeUserInfo: _sanitizeTrustedUserInfo,
-      applyAuthState: function (state) { return pluginInstance._applyDashboardAuthState(state); },
-      readAuthState: function () { return pluginInstance._authAdapter.getPkceState(); },
-    });
-    // Restore only the plugin's persisted PKCE identity. Legacy Dashboard
-    // cookies remain a runtime fallback and are never promoted to this token.
-    try {
-      var persistedToken = _gmGetValue("authToken", "");
-      if (typeof persistedToken === "string" && persistedToken) {
-        var persistedUser = _getStoredUserInfo();
-        this._authAdapter.applyPkceState({ token: persistedToken, userInfo: persistedUser });
-        _mirrorCurrentAuthAliases(this._authAdapter.getToken(), persistedUser);
-      } else {
-        _gmDeleteValueIfPresent("userInfo");
-        _gmDeleteValueIfPresent("user_info");
-        _gmDeleteValueIfPresent("subscriptionInfo");
-      }
-    } catch (e) {}
+  class IMTExtendedPluginClass extends obsidian.Plugin {
+    constructor(app, manifest) {
+      super(app, manifest);
+      this.settings = Object.assign({}, DEFAULT_SETTINGS);
+      this._i18nDisabled = false;
+      this._i18nConflictState = null;
+      this._initialized = false;
+      this._isUnloaded = true; this._activationGeneration = 0;
+      this._startupTimers = []; this._globalPatches = []; this._gmStyleElements = [];
+      this._windowRuntimeLedger = createWindowRuntimeLedger();
+      this._externalScripts = []; this._originalWindowOpen = null;
+      this._loadedUserscriptVersion = ""; this._installedRuntime = null; this._runtimeInstallPromise = null; this._runtimeInstallGeneration = 0;
+      this._runtimeInstallPhase = ""; this._runtimeInstallError = ""; this._latestRuntimeSource = ""; this._latestRuntimeSourceVersion = "";
+      this._latestRuntimeVersion = ""; this._runtimeVersionCheckState = "idle"; this._runtimeVersionCheckedAt = 0; this._runtimeVersionCheckPromise = null; this._runtimeVersionCheckGeneration = 0;
+      this._patchedWindowOpen = null;
+      this._dashboardWindow = null; this._syncPollTimer = null; this._providerLoginGuideModal = null;
+      this._documentSession = createDocumentSession();
+      this._translationViewBridge = null;
+      this._hostWindowRuntimeManager = null;
+      this._hostWindowUserscriptSource = "";
+      this._hostWindowUserscriptBridgeReady = null;
+      this._hostBridgeReady = null;
+      this._runtimeCompatibilityNoticeKey = "";
+      this._configRestoreDepth = 0;
+      this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
+      this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
+      this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
+      this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
+      this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
+      this._translationIntentSequence = 0;
+      this._lastHostTranslationState = undefined;
+      this._userscriptRequestSequence = 0;
+      this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
+      this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
+      var pluginInstance = this;
+      this._dashboardPkceHost = createDashboardPkceHost({
+        request: function (options) { return obsidian.requestUrl(options); },
+        sanitizeUserInfo: _sanitizeTrustedUserInfo,
+        applyAuthState: function (state) { return pluginInstance._applyDashboardAuthState(state); },
+        readAuthState: function () { return pluginInstance._authAdapter.getPkceState(); },
+      });
+      // Restore only the plugin's persisted PKCE identity. Legacy Dashboard
+      // cookies remain a runtime fallback and are never promoted to this token.
+      try {
+        var persistedToken = _gmGetValue("authToken", "");
+        if (typeof persistedToken === "string" && persistedToken) {
+          var persistedUser = _getStoredUserInfo();
+          this._authAdapter.applyPkceState({ token: persistedToken, userInfo: persistedUser });
+          _mirrorCurrentAuthAliases(this._authAdapter.getToken(), persistedUser);
+        } else {
+          _gmDeleteValueIfPresent("userInfo");
+          _gmDeleteValueIfPresent("user_info");
+          _gmDeleteValueIfPresent("subscriptionInfo");
+        }
+      } catch (e) {}
+    }
   }
-
-  IMTExtendedPluginClass.prototype = Object.create(obsidian.Plugin.prototype);
-  IMTExtendedPluginClass.prototype.constructor = IMTExtendedPluginClass;
 
   IMTExtendedPluginClass.prototype._advanceSyncGeneration = function () {
     this._syncGeneration++;
@@ -8083,8 +8100,9 @@ var IMTExtendedPlugin = (function () {
     } catch (e) { return Promise.resolve(false); }
   }
 
-  function IMTSettingTab(app, plugin) { obsidian.PluginSettingTab.call(this, app, plugin); this.plugin = plugin; }
-  IMTSettingTab.prototype = Object.create(obsidian.PluginSettingTab.prototype); IMTSettingTab.prototype.constructor = IMTSettingTab;
+  class IMTSettingTab extends obsidian.PluginSettingTab {
+    constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
+  }
   IMTSettingTab.prototype.display = function () {
     var containerEl = this.containerEl;
     var findDraftInput = function (root) {

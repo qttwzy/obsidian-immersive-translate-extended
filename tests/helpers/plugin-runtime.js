@@ -151,7 +151,7 @@ function restoreRuntime() {
 let PluginClass;
 
 function loadPluginClass() {
-  function Plugin(app, manifest) { this.app = app; this.manifest = manifest; }
+  class Plugin { constructor(app, manifest) { this.app = app; this.manifest = manifest; } }
   Plugin.prototype.loadData = async function () { return null; };
   Plugin.prototype.saveData = async function () {};
   Plugin.prototype.addSettingTab = function (tab) { harness.addedSettingTabs.push(tab); };
@@ -170,7 +170,7 @@ function loadPluginClass() {
     this.closed = true;
     if (typeof this.onClose === "function") this.onClose();
   };
-  function PluginSettingTab(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = makeElement("div"); }
+  class PluginSettingTab { constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = makeElement("div"); } }
   function MarkdownView() {}
   function Setting(container) { this.settingEl = container.createDiv({ cls: "setting-item" }); }
   Setting.prototype.setName = function (name) { this.settingEl.createDiv({ cls: "setting-item-name", text: name }); return this; };

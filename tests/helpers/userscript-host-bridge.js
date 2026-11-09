@@ -53,6 +53,7 @@ const REGION_FIXTURE_SHAPES = {
   "1.33.3": { wrapper: "A9", traverser: "Mp", timer: "Tp", marks: "ur", stopped: "Yr", engine: "Ve", context: "Ci", entry: "Yr()" },
   "1.34.1": { wrapper: "$M", traverser: "Of", timer: "pf", marks: "sr", stopped: "ei", engine: "He", context: "Di", entry: "ei()||n?.shouldContinue?.()===!1" },
   "1.34.4": { wrapper: "$M", traverser: "Ff", timer: "hf", marks: "sr", stopped: "ei", engine: "He", context: "Di", entry: "ei()||n?.shouldContinue?.()===!1" },
+  "1.35.1": { wrapper: "z8", traverser: "A0", timer: "r0", marks: "wr", stopped: "bi", engine: "Qe", context: "Xi", entry: "bi()||n?.shouldContinue?.()===!1" },
 };
 
 function hostRegionBridgeFixture(version = "1.33.2") {
@@ -64,7 +65,7 @@ let ${engine}=controls.engine;
 const ${context}=()=>({}),${timer}=async(_name,callback)=>await callback();
 function ${traverser}(request){return controls.scan(request)}
 if(${engine}){${engine}.traverseContent=${traverser},${engine}.walkContainer=${traverser}}
-async function ${wrapper}(e,t,n,r){if(${entry})return;let i=${context}(e.ctx);await ${timer}("initial_traverse_ms",()=>e.traverseContent({id:e.id,container:t,filterRule:i,performancePhase:r,onParagraph:async o=>{if(n?.shouldParseParagraph&&!n.shouldParseParagraph(o).shouldParse){n.onParsed?.(null);return}n?.onParsed?.(o??null);await controls.onParagraph?.(o)},engineCtx:e}))}
+async function ${wrapper}(e,t,n,r){if(${entry})return;let i=${context}(e.ctx);await ${timer}("initial_traverse_ms",()=>e.traverseContent({id:e.id,container:t,filterRule:i,shouldContinue:n?.shouldContinue,performancePhase:r,onParagraph:async o=>{if(n?.shouldContinue?.()===!1)return;if(n?.shouldParseParagraph&&!n.shouldParseParagraph(o).shouldParse){n.onParsed?.(null);return}n?.onParsed?.(o??null);await controls.onParagraph?.(o)},engineCtx:e}))}
 /* __imtHostLifecycleGuardV1 */
 async function hostHandler(e,t){const calls=[],r=e,Ae=async()=>({ok:true}),E1t=async()=>{},td=()=>{};let i;try{let o=JSON.parse(typeof t==="string"?t:t.detail||"{}");if(o&&o.type){if(o.type==="noop"){}else if(o.type==="translatePage")await E1t(r,o.data);else if(o.type==="getAsyncTranslationServiceList"){}else if(o.type==="switchTranslationMode"){}else Ae("content",o.type);i!==void 0&&o.id&&td(o.type,i,o.id)}}catch(error){throw error}return i}
 `;
@@ -104,6 +105,28 @@ function actual1344HostLifecycleFixture() {
     .replace("trigger:hQ(t)", "trigger:yQ(t)");
 }
 
+// Reduced executable copy of the 1.35.1 E8t -> qo -> BTe call shape.
+function actual1351HostLifecycleFixture() {
+  return `// @version 1.35.1
+const events=controls.events;
+const fUe=controls.R9e,Zt=controls.Yt,cr=()=>"test:";
+const Ht=()=>"Translated",W8=()=>undefined;
+const cIe=()=>true,AP=()=>{},dFe=async()=>false,gFe=async()=>false;
+const kTe=()=>{events.push("startSession");controls.onStartSession?.();return{session_id:"session"}};
+const XX=t=>t?.trigger,js=name=>name==="translatePage"?qo:()=>{};
+function TLt(e){if(!e)return{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0,enableObserver:void 0};let{trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i,...o}=e;return{state:Object.keys(o).length?o:void 0,trigger:t,startedAt:n,documentTerminologyInput:r,enableObserver:i}}
+function nextParser(){}
+async function E8t(e,t){let n=t?.enableObserver===!1?W8():void 0;try{let r=await fUe(e,t),i;return await js("translatePage")(r,{trigger:XX(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}}),r}finally{n?.()}}
+function nextHandler(){}
+async function BTe({passGate:e,preparePreviousPage:t,prepareCurrentPage:n,startSession:r}){if(await e())return await t(),n(),r()}
+function nextGate(){}
+async function rd(e=!1){events.push(["restore-request",e]);let t=await Zt(cr(),{});controls.onRestore?.(e)}
+function nextRestore(){}
+async function qo(e,t){let n=t?.enableObserver===!1?W8():void 0;try{let r=globalThis.performance?.now?.()??Date.now(),i=Date.now(),o=globalThis.self===globalThis.top;let a=e,{state:s,trigger:l,startedAt:u,documentTerminologyInput:c,enableObserver:d}=TLt(t),g=typeof l=="string"?l:"unknown";let m;if(s){let v=globalThis.performance?.now?.()??Date.now();try{a=await Zt(cr(),s)}finally{m=(globalThis.performance?.now?.()??Date.now())-v}}if(!cIe(a.translationService,a.targetLanguage,a.config))return;let f=v=>{qo(e,{...s,...v,...l?{trigger:l}:{},...u?{startedAt:u}:{},...c!==void 0?{documentTerminologyInput:c}:{},...d===!1?{enableObserver:!1}:{}})};if(AP(a),await dFe(a,g,f)||await gFe(a,f))return;let h,b=await BTe({passGate:async()=>{let retry={onRetry:()=>(qo(e,t),!0)};controls.onRetry?.(retry.onRetry);return(await controls.ao()).allowed},preparePreviousPage:async()=>{Ht()!=="Original"&&await rd(!0)},prepareCurrentPage:()=>{events.push("prepareCurrentPage")},startSession:()=>kTe(a,{trigger:g})});if(!b)return;let y=b.session_id;events.push("session");return b}finally{n?.()}}
+function nextPage(){}
+`;
+}
+
 function legacyHostRegionBridgeFixture() {
   return [
     "// @version 1.32.10",
@@ -128,6 +151,7 @@ module.exports = {
   actual1332HostLifecycleFixture,
   actual1341HostLifecycleFixture,
   actual1344HostLifecycleFixture,
+  actual1351HostLifecycleFixture,
   legacyHostRegionBridgeFixture,
   hostRegionBridgeFixture,
   renamedTransportHostBridgeFixture,

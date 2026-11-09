@@ -104,6 +104,15 @@ test("the 1.34.4 profile registers the current official runtime", () => {
   assert.equal(resolved.capabilities.sidePanelWidth, false);
 });
 
+test("the 1.35.1 profile registers the live-verified runtime and fallback", () => {
+  const resolved = resolveRuntimeCompatibility("1.35.1");
+  assert.equal(resolved.known, true);
+  assert.equal(resolved.profile, "1.35.1");
+  assert.equal(resolved.evidence, "live-obsidian");
+  assert.deepEqual(resolved.capabilities, { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false });
+  assert.equal(SUPPORTED_OFFICIAL_RUNTIME_VERSION, "1.35.1");
+});
+
 test("a malformed metadata block is unreadable instead of falling back to a stray version line", () => {
   const malformed = "// ==UserScript==\n// @version 1.34.1\n// @version 9.9.9\n// ==/UserScript==\nwindow.x=1;";
   assert.equal(readRuntimeVersion(malformed), "");

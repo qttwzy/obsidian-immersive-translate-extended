@@ -224,12 +224,13 @@ function patchUserscriptHostContentBridge(source) {
 
 // This bridge is installed after the host content bridge and lifecycle guard.
 // Keep the upstream engine's paragraph callback by calling its own bounded
-// traversal wrapper (w9 in 1.33.2, A9 in 1.33.3, $M in 1.34.1 and 1.34.4).
+// traversal wrapper (w9/A9 in 1.33.x, $M in 1.34.x, z8 in 1.35.1).
 const REGION_BRIDGE_SHAPES = {
   "1.33.2": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "w9", traverse: "Ap", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.33.3": { engine: "Ve", marks: "ur", stopped: "Yr", wrapper: "A9", traverse: "Mp", timing: "(?:bp|Tp)", context: "Ci", entryCondition: "Yr()" },
   "1.34.x": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Of", timing: "pf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
   "1.34.4": { engine: "He", marks: "sr", stopped: "ei", wrapper: "$M", traverse: "Ff", timing: "hf", context: "Di", entryCondition: "ei()||n?.shouldContinue?.()===!1" },
+  "1.35.1": { engine: "Qe", marks: "wr", stopped: "bi", wrapper: "z8", traverse: "A0", timing: "r0", context: "Xi", entryCondition: "bi()||n?.shouldContinue?.()===!1" },
 };
 
 function patchUserscriptHostRegionBridge(source) {
@@ -303,7 +304,8 @@ function patchUserscriptHostRegionBridge(source) {
           for(const candidate of candidates){
             if(!current())return{success:false,error:"stale-host-policy"};
             if(root.ownerDocument!==document||!root.isConnected||candidate.ownerDocument!==document||!candidate.isConnected||!root.contains(candidate))return{success:false,error:"region-detached"};
-            await ${expectedWrapper}(engine,candidate,{shouldParseParagraph:()=>({shouldParse:current()&&root.ownerDocument===document&&root.isConnected&&candidate.ownerDocument===document&&candidate.isConnected&&root.contains(candidate)})},"dynamic");
+            const shouldContinue=()=>current()&&root.ownerDocument===document&&root.isConnected&&candidate.ownerDocument===document&&candidate.isConnected&&root.contains(candidate);
+            await ${expectedWrapper}(engine,candidate,{shouldContinue,shouldParseParagraph:()=>({shouldParse:shouldContinue()})},"dynamic");
             if(!current())return{success:false,error:"stale-host-policy"};
             if(root.ownerDocument!==document||!root.isConnected||candidate.ownerDocument!==document||!candidate.isConnected||!root.contains(candidate))return{success:false,error:"region-detached"};
             scanned++;
@@ -357,8 +359,8 @@ function patchLegacyHostRegionBridge(source) {
   return { source: withHelper.replace(translate[0][0], translate[0][0] + branch), changed: true, reason: "patched" };
 }
 
-// These lifecycle boundaries were inspected in the official 1.33.2, 1.33.3,
-// 1.34.1 and 1.34.4 runtimes. Capture minified names, but require the profile's
+// These lifecycle boundaries were inspected in the registered official
+// 1.33.x, 1.34.x and 1.35.1 runtimes. Capture names, but require the profile's
 // full call shape before editing a source.
 const LIFECYCLE_GUARD_SHAPE_133 = {
   parser: new RegExp("function (" + JS_IDENTIFIER + ")\\(e\\)\\{if\\(!e\\)return\\{state:void 0,trigger:void 0,startedAt:void 0,documentTerminologyInput:void 0\\}"),
@@ -394,11 +396,21 @@ const LIFECYCLE_GUARD_SHAPE_1344 = {
   ...LIFECYCLE_GUARD_SHAPE_134,
   invocation: new RegExp(escapeRegExp('await Xa("translatePage")(r,{trigger:yQ(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
 };
+const LIFECYCLE_GUARD_SHAPE_1351 = {
+  ...LIFECYCLE_GUARD_SHAPE_134,
+  page: new RegExp("async function (" + JS_IDENTIFIER + ")\\(e,t\\)\\{let n=t\\?\\.enableObserver===!1\\?W8\\(\\):void 0;try\\{let r=globalThis\\.performance\\?\\.now\\?\\.\\(\\)\\?\\?Date\\.now\\(\\)"),
+  invocation: new RegExp(escapeRegExp('await js("translatePage")(r,{trigger:XX(t),...t?.enableObserver===!1?{enableObserver:!1}:{},...i!==void 0?{documentTerminologyInput:i}:{}})')),
+  pagePreamble: function (parser) { return "let a=e,{state:s,trigger:l,startedAt:u,documentTerminologyInput:c,enableObserver:d}=" + parser + "(t),g=typeof l==\"string\"?l:\"unknown\";"; },
+  initialCheck: /finally\{m=\(globalThis\.performance\?\.now\?\.\(\)\?\?Date\.now\(\)\)-v\}\}if\(!([A-Za-z_$][A-Za-z0-9_$]*)/,
+  beforeGate: function (gate) { return new RegExp("if\\(" + JS_IDENTIFIER + "\\(a\\),await " + JS_IDENTIFIER + "\\(a,g,f\\)\\|\\|await " + JS_IDENTIFIER + "\\(a,f\\)\\)return;let h,b=await " + escapeRegExp(gate) + "\\(\\{"); },
+  recursionTail: "...d===!1?{enableObserver:!1}:{}})};",
+};
 const LIFECYCLE_GUARD_SHAPES = {
   "1.33.2": LIFECYCLE_GUARD_SHAPE_133,
   "1.33.3": LIFECYCLE_GUARD_SHAPE_133,
   "1.34.x": LIFECYCLE_GUARD_SHAPE_134,
   "1.34.4": LIFECYCLE_GUARD_SHAPE_1344,
+  "1.35.1": LIFECYCLE_GUARD_SHAPE_1351,
 };
 function patchUserscriptHostLifecycleGuard(source) {
   if (typeof source !== "string") return unchanged(source, "invalid-source");
@@ -446,10 +458,10 @@ function patchUserscriptHostLifecycleGuard(source) {
   const handlerStart = handlerStarts.at(-1);
   if (!handlerStart || contextMatches[0].index - handlerStart.index > 4096) return unchanged(source, "ambiguous-anchor");
   const starts = [gateMatches[0], handlerStart, parserMatches[0], pageMatches[0]];
-  const restoreCalls = findPatternMatches(source, /preparePreviousPage:async\(\)=>\{[A-Za-z_$][A-Za-z0-9_$]*\(\)!=="Original"&&await ([A-Za-z_$][A-Za-z0-9_$]*)\(\)\}/);
+  const restoreCalls = findPatternMatches(source, /preparePreviousPage:async\(\)=>\{[A-Za-z_$][A-Za-z0-9_$]*\(\)!=="Original"&&await ([A-Za-z_$][A-Za-z0-9_$]*)\((?:!0)?\)\}/);
   if (restoreCalls.length !== 1) return unchanged(source, "ambiguous-anchor");
   const restoreName = restoreCalls[0][1];
-  const restoreStarts = findPatternMatches(source, new RegExp("async function " + restoreName.replace(/\$/g, "\\$") + "\\(\\)\\{"));
+  const restoreStarts = findPatternMatches(source, new RegExp("async function " + restoreName.replace(/\$/g, "\\$") + "\\((?:e=!1)?\\)\\{"));
   if (restoreStarts.length !== 1) return unchanged(source, "ambiguous-anchor");
   starts.push(restoreStarts[0]);
   const limits = [1024, 4096, 2048, 12000, 4096];
@@ -476,7 +488,7 @@ function patchUserscriptHostLifecycleGuard(source) {
   const invocation = findPatternMatches(edits[1].text, shape.invocation);
   const initialCheck = findPatternMatches(edits[3].text, shape.initialCheck);
   const beforeGate = findPatternMatches(edits[3].text, shape.beforeGate(gate));
-  const restoreContext = findPatternMatches(edits[4].text, /let e=await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*\(\),\{\}\);/);
+  const restoreContext = findPatternMatches(edits[4].text, /let [et]=await [A-Za-z_$][A-Za-z0-9_$]*\([A-Za-z_$][A-Za-z0-9_$]*\(\),\{\}\);/);
   if ([invocation, initialCheck, beforeGate, restoreContext].some((matches) => matches.length !== 1)) return unchanged(source, "anchor-not-found");
 
   function replaceInSection(index, oldText, newText) {
@@ -506,7 +518,7 @@ function patchUserscriptHostLifecycleGuard(source) {
       'onRetry:()=>(' + page + '(e,{...t,...__imtHostPolicy?{__imtHostGeneration:__imtHostExpectedGeneration}:{}}),!0)'],
     [3, beforeGate[0][0], beforeGate[0][0].replace(shape.beforeGateInsert[0], shape.beforeGateInsert[1]).replace("({", "({isCurrent:__imtHostCurrent,")],
     [3, shape.gateResult[0], shape.gateResult[1]],
-    [4, "async function " + restoreName + "(){", "async function " + restoreName + "(){let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;"],
+    [4, restoreStarts[0][0], restoreStarts[0][0] + "let __imtHostRestorePolicy=globalThis.__imtHostTranslationPolicy,__imtHostRestoreGeneration=__imtHostRestorePolicy?.generation;"],
     [4, restoreContext[0][0], restoreContext[0][0] + "if(__imtHostRestorePolicy&&(globalThis.__imtHostTranslationPolicy!==__imtHostRestorePolicy||__imtHostRestorePolicy.generation!==__imtHostRestoreGeneration))return;"],
   ];
   replacements[8][1] = 'onRetry:()=>(' + page + '(e,t),!0)';

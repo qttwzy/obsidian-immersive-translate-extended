@@ -4,7 +4,7 @@
 
 The project maintains stable releases starting with 4.0.7. The 4.0.x product supports Obsidian Desktop 1.12.7 or newer, Markdown Reading View translation, interface translation in host popout windows such as Settings and the community plugin or theme browsers, and the official PDF/document translation workspace. Plugin settings show the locally installed runtime and current official version, with install and update actions from the official source. Routine fixes target the latest stable release.
 
-Automatic translation and partial re-translation in Settings and other host windows require an official runtime version this plugin has verified. Verified runtime versions are 1.34.4, 1.34.1 (the current fallback), 1.33.2, 1.33.3, and the 1.32.x line (1.32.8, 1.32.9, 1.32.10 were probed). A newer official runtime disables those features; the plugin reports this once at startup and in its settings, and the verified runtime can be installed from there.
+Automatic translation and partial re-translation in Settings and other host windows require an official runtime version this plugin has verified. Verified runtime versions are 1.35.1 (the current verified install version), 1.34.4, 1.34.1, 1.33.2, 1.33.3, and the 1.32.x line (1.32.8, 1.32.9, 1.32.10 were probed). A newer official runtime disables those features; the plugin reports this once at startup and in its settings, and the verified runtime can be installed from there.
 
 Vault PDFs expose a languages action in the active PDF view and attempt a controlled handoff to the isolated official workspace. Other supported documents use manual file selection in that workspace. Release testing focuses on macOS and Windows; Linux remains outside the verified platform coverage.
 

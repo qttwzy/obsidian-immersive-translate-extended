@@ -7,7 +7,7 @@ const RUNTIME_FILENAME = "userscript.runtime.js";
 // The version the plugin installs when a user returns to a verified runtime.
 // It stays an explicit value: a version that is partly compatible must not
 // change what "install the verified version" restores.
-const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
+const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.35.1";
 
 // Verified official-runtime compatibility declarations; see docs/RUNTIME.md.
 // One entry per official runtime version the plugin has verified, naming the
@@ -21,6 +21,12 @@ const SUPPORTED_OFFICIAL_RUNTIME_VERSION = "1.34.1";
 // were confirmed to hold across the family, and each one still has to pass its
 // own anchor probe.
 const RUNTIME_COMPAT_MATRIX = [
+  {
+    version: "1.35.1",
+    profile: "1.35.1",
+    evidence: "live-obsidian",
+    capabilities: { hostContentBridge: true, lifecycleGuard: true, regionBridge: true, sidePanelWidth: false },
+  },
   {
     version: "1.34.4",
     profile: "1.34.4",

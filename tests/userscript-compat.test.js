@@ -19,6 +19,7 @@ const {
   actual1332HostLifecycleFixture,
   actual1341HostLifecycleFixture,
   actual1344HostLifecycleFixture,
+  actual1351HostLifecycleFixture,
   hostBridgeFixture,
   hostRegionBridgeFixture,
   legacyHostRegionBridgeFixture,
@@ -43,7 +44,8 @@ function lifecycleHarness(overrides = {}, source = actual1332HostLifecycleFixtur
   };
   const result = patchUserscriptHostLifecycleGuard(source);
   assert.equal(result.changed, true);
-  const names = /^\/\/ @version 1\.34\./.test(source) ? ["bSt", "vo"] : ["k1t", "fo"];
+  const names = /^\/\/ @version 1\.35\.1/.test(source) ? ["E8t", "qo"] :
+    /^\/\/ @version 1\.34\./.test(source) ? ["bSt", "vo"] : ["k1t", "fo"];
   const runtime = new Function("controls", result.source + "\nreturn {" + names.join(",") + "};")(controls);
   return { events, handler: runtime[names[0]], page: runtime[names[1]], k1t: runtime[names[0]], fo: runtime[names[1]], result };
 }
@@ -506,7 +508,7 @@ test("an old asynchronous previous-page restore cannot clear a reopened child se
   } finally { delete globalThis.__imtHostTranslationPolicy; }
 });
 
-for (const version of ["1.33.2", "1.33.3", "1.34.1", "1.34.4"]) {
+for (const version of ["1.33.2", "1.33.3", "1.34.1", "1.34.4", "1.35.1"]) {
   test(`region bridge ${version} scans only a new subtree and leaves old translation in place`, async () => {
     const h = regionHarness(version);
     const root = h.element(null, { marked: true });
@@ -588,6 +590,68 @@ test("the 1.34.4 profile pins the renamed trigger normalizer", () => {
   const stale = actual1344HostLifecycleFixture().replace("trigger:yQ(t)", "trigger:hQ(t)");
   assert.deepEqual(patchUserscriptHostLifecycleGuard(stale), { source: stale, changed: false, reason: "anchor-not-found" });
   assert.equal(patchUserscriptHostLifecycleGuard(actual1344HostLifecycleFixture()).changed, true);
+});
+
+test("the 1.35.1 lifecycle guard stops stale work before restoring the previous page", async () => {
+  const gate = deferred();
+  const policy = { active: true, generation: 3 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const h = lifecycleHarness({ ao: () => gate.promise }, actual1351HostLifecycleFixture());
+    const task = h.page({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host" });
+    await Promise.resolve();
+    policy.active = false;
+    policy.generation++;
+    gate.resolve({ allowed: true });
+    await task;
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("the 1.35.1 lifecycle guard preserves the upstream restore flag and host generation", async () => {
+  const policy = { active: true, generation: 5 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const restored = [];
+    const h = lifecycleHarness({ onRestore: flag => restored.push(flag) }, actual1351HostLifecycleFixture());
+    await h.handler({ translationService: "test", targetLanguage: "en", config: {} }, { trigger: "host", __imtHostGeneration: 5 });
+    assert.deepEqual(restored, [true]);
+    assert.deepEqual(h.events, [["restore-request", true], "prepareCurrentPage", "startSession", "session"]);
+    assert.deepEqual(patchUserscriptHostLifecycleGuard(h.result.source), { source: h.result.source, changed: false, reason: "already-patched" });
+    h.events.length = 0;
+    await h.handler({}, { trigger: "host", __imtHostGeneration: 4 });
+    assert.deepEqual(h.events, []);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
+});
+
+test("the 1.35.1 region bridge forwards cancellation into the upstream traversal", async () => {
+  const h = regionHarness("1.35.1");
+  const root = h.element();
+  h.document.roots.set(".vertical-tab-content", [root]);
+  assert.equal((await h.send({ regions: ["settings-content"], __imtHostGeneration: 7 })).success, true);
+  const scan = h.scans[0];
+  assert.equal(scan.shouldContinue(), true);
+  h.policy.active = false;
+  h.policy.generation++;
+  assert.equal(scan.shouldContinue(), false);
+});
+
+test("an old 1.35.1 restore cannot clear a reopened host session", async () => {
+  const previous = deferred();
+  const policy = { active: true, generation: 5 };
+  globalThis.__imtHostTranslationPolicy = policy;
+  try {
+    const restored = [];
+    const h = lifecycleHarness({ Yt: () => previous.promise, onRestore: flag => restored.push(flag) }, actual1351HostLifecycleFixture());
+    const task = h.page({ translationService: "test", targetLanguage: "en", config: {} }, { __imtHostGeneration: 5 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(h.events, [["restore-request", true]]);
+    policy.generation++;
+    previous.resolve({ rule: {} });
+    await task;
+    assert.deepEqual(restored, []);
+    assert.deepEqual(h.events, [["restore-request", true]]);
+  } finally { delete globalThis.__imtHostTranslationPolicy; }
 });
 
 test("legacy 1.32.10 host runtime accepts the regional bridge patch", () => {

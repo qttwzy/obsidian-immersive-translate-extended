@@ -76,7 +76,7 @@ var IMTExtendedPlugin = (function () {
   var loadInstalledRuntime = runtimeInstaller.loadInstalledRuntime;
 
   var PLUGIN_ID = "immersive-translate-extended";
-  var PLUGIN_VERSION = "4.0.7";
+  var PLUGIN_VERSION = "4.0.8";
   var RUNTIME_VERSION_CHECK_TTL_MS = 5 * 60 * 1000;
   var DOCUMENT_RUNTIME_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
   var DOCUMENT_RUNTIME_MAX_HEADER_BYTES = 64 * 1024;
@@ -457,64 +457,63 @@ var IMTExtendedPlugin = (function () {
 
   function _encodeUtf8(value) { return new TextEncoder().encode(String(value)); }
 
-  function IMTExtendedPluginClass(app, manifest) {
-    obsidian.Plugin.call(this, app, manifest);
-    this.settings = Object.assign({}, DEFAULT_SETTINGS);
-    this._i18nDisabled = false;
-    this._i18nConflictState = null;
-    this._initialized = false;
-    this._isUnloaded = true; this._activationGeneration = 0;
-    this._startupTimers = []; this._globalPatches = []; this._gmStyleElements = [];
-    this._windowRuntimeLedger = createWindowRuntimeLedger();
-    this._externalScripts = []; this._originalWindowOpen = null;
-    this._loadedUserscriptVersion = ""; this._installedRuntime = null; this._runtimeInstallPromise = null; this._runtimeInstallGeneration = 0;
-    this._runtimeInstallPhase = ""; this._runtimeInstallError = ""; this._latestRuntimeSource = ""; this._latestRuntimeSourceVersion = "";
-    this._latestRuntimeVersion = ""; this._runtimeVersionCheckState = "idle"; this._runtimeVersionCheckedAt = 0; this._runtimeVersionCheckPromise = null; this._runtimeVersionCheckGeneration = 0;
-    this._patchedWindowOpen = null;
-    this._dashboardWindow = null; this._syncPollTimer = null; this._providerLoginGuideModal = null;
-    this._documentSession = createDocumentSession();
-    this._translationViewBridge = null;
-    this._hostWindowRuntimeManager = null;
-    this._hostWindowUserscriptSource = "";
-    this._hostWindowUserscriptBridgeReady = null;
-    this._hostBridgeReady = null;
-    this._runtimeCompatibilityNoticeKey = "";
-    this._configRestoreDepth = 0;
-    this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
-    this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
-    this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
-    this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
-    this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
-    this._translationIntentSequence = 0;
-    this._lastHostTranslationState = undefined;
-    this._userscriptRequestSequence = 0;
-    this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
-    this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
-    var pluginInstance = this;
-    this._dashboardPkceHost = createDashboardPkceHost({
-      request: function (options) { return obsidian.requestUrl(options); },
-      sanitizeUserInfo: _sanitizeTrustedUserInfo,
-      applyAuthState: function (state) { return pluginInstance._applyDashboardAuthState(state); },
-      readAuthState: function () { return pluginInstance._authAdapter.getPkceState(); },
-    });
-    // Restore only the plugin's persisted PKCE identity. Legacy Dashboard
-    // cookies remain a runtime fallback and are never promoted to this token.
-    try {
-      var persistedToken = _gmGetValue("authToken", "");
-      if (typeof persistedToken === "string" && persistedToken) {
-        var persistedUser = _getStoredUserInfo();
-        this._authAdapter.applyPkceState({ token: persistedToken, userInfo: persistedUser });
-        _mirrorCurrentAuthAliases(this._authAdapter.getToken(), persistedUser);
-      } else {
-        _gmDeleteValueIfPresent("userInfo");
-        _gmDeleteValueIfPresent("user_info");
-        _gmDeleteValueIfPresent("subscriptionInfo");
-      }
-    } catch (e) {}
+  class IMTExtendedPluginClass extends obsidian.Plugin {
+    constructor(app, manifest) {
+      super(app, manifest);
+      this.settings = Object.assign({}, DEFAULT_SETTINGS);
+      this._i18nDisabled = false;
+      this._i18nConflictState = null;
+      this._initialized = false;
+      this._isUnloaded = true; this._activationGeneration = 0;
+      this._startupTimers = []; this._globalPatches = []; this._gmStyleElements = [];
+      this._windowRuntimeLedger = createWindowRuntimeLedger();
+      this._externalScripts = []; this._originalWindowOpen = null;
+      this._loadedUserscriptVersion = ""; this._installedRuntime = null; this._runtimeInstallPromise = null; this._runtimeInstallGeneration = 0;
+      this._runtimeInstallPhase = ""; this._runtimeInstallError = ""; this._latestRuntimeSource = ""; this._latestRuntimeSourceVersion = "";
+      this._latestRuntimeVersion = ""; this._runtimeVersionCheckState = "idle"; this._runtimeVersionCheckedAt = 0; this._runtimeVersionCheckPromise = null; this._runtimeVersionCheckGeneration = 0;
+      this._patchedWindowOpen = null;
+      this._dashboardWindow = null; this._syncPollTimer = null; this._providerLoginGuideModal = null;
+      this._documentSession = createDocumentSession();
+      this._translationViewBridge = null;
+      this._hostWindowRuntimeManager = null;
+      this._hostWindowUserscriptSource = "";
+      this._hostWindowUserscriptBridgeReady = null;
+      this._hostBridgeReady = null;
+      this._runtimeCompatibilityNoticeKey = "";
+      this._configRestoreDepth = 0;
+      this._pdfActionViews = new WeakSet(); this._pdfActionElements = [];
+      this._dashboardPkceChannel = ""; this._dashboardPkceIpcHandler = null;
+      this._syncGeneration = 0; this._syncApplyChain = Promise.resolve(); this._lastSyncHash = ""; this._syncReadInFlight = false; this._authReadInFlight = false;
+      this._gmValueChangeListeners = Object.create(null); this._nextGmValueChangeListenerId = 1; this._browserStorageChangeListeners = [];
+      this._configReplayTimer = null; this._configRuntimeSequence = 0; this._configRuntimeChain = Promise.resolve();
+      this._translationIntentSequence = 0;
+      this._lastHostTranslationState = undefined;
+      this._userscriptRequestSequence = 0;
+      this._lastCookieHeader = ""; this._authGeneration = 0; this._cookieReadSequence = 0;
+      this._authAdapter = new AuthSessionAdapter({ sanitizeUserInfo: _sanitizeTrustedUserInfo });
+      var pluginInstance = this;
+      this._dashboardPkceHost = createDashboardPkceHost({
+        request: function (options) { return obsidian.requestUrl(options); },
+        sanitizeUserInfo: _sanitizeTrustedUserInfo,
+        applyAuthState: function (state) { return pluginInstance._applyDashboardAuthState(state); },
+        readAuthState: function () { return pluginInstance._authAdapter.getPkceState(); },
+      });
+      // Restore only the plugin's persisted PKCE identity. Legacy Dashboard
+      // cookies remain a runtime fallback and are never promoted to this token.
+      try {
+        var persistedToken = _gmGetValue("authToken", "");
+        if (typeof persistedToken === "string" && persistedToken) {
+          var persistedUser = _getStoredUserInfo();
+          this._authAdapter.applyPkceState({ token: persistedToken, userInfo: persistedUser });
+          _mirrorCurrentAuthAliases(this._authAdapter.getToken(), persistedUser);
+        } else {
+          _gmDeleteValueIfPresent("userInfo");
+          _gmDeleteValueIfPresent("user_info");
+          _gmDeleteValueIfPresent("subscriptionInfo");
+        }
+      } catch (e) {}
+    }
   }
-
-  IMTExtendedPluginClass.prototype = Object.create(obsidian.Plugin.prototype);
-  IMTExtendedPluginClass.prototype.constructor = IMTExtendedPluginClass;
 
   IMTExtendedPluginClass.prototype._advanceSyncGeneration = function () {
     this._syncGeneration++;
@@ -4194,8 +4193,9 @@ var IMTExtendedPlugin = (function () {
     } catch (e) { return Promise.resolve(false); }
   }
 
-  function IMTSettingTab(app, plugin) { obsidian.PluginSettingTab.call(this, app, plugin); this.plugin = plugin; }
-  IMTSettingTab.prototype = Object.create(obsidian.PluginSettingTab.prototype); IMTSettingTab.prototype.constructor = IMTSettingTab;
+  class IMTSettingTab extends obsidian.PluginSettingTab {
+    constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
+  }
   IMTSettingTab.prototype.display = function () {
     var containerEl = this.containerEl;
     var findDraftInput = function (root) {
