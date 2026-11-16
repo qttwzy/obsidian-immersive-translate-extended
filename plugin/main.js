@@ -7933,7 +7933,10 @@ var IMTExtendedPlugin = (function () {
     var pluginInstance = this;
     if (runtimeWindow !== window) {
       if (this.settings.uiTranslateEnabled) {
-        if (this.settings.translationRegionIds.indexOf("dialogs") < 0) excludeSelectors = excludeSelectors.concat([".mod-settings", ".modal-container"]);
+        if (this.settings.translationRegionIds.indexOf("dialogs") < 0) excludeSelectors = excludeSelectors.concat([".mod-settings"]);
+        if (this.settings.translationRegionIds.indexOf("dialogs") < 0 && this.settings.translationRegionIds.indexOf("community") < 0) {
+          excludeSelectors = excludeSelectors.concat([".modal-container"]);
+        }
         if (this.settings.translationRegionIds.indexOf("community") < 0) excludeSelectors = excludeSelectors.concat([".mod-community-plugin", ".mod-community-theme"]);
       } else {
         excludeSelectors = excludeSelectors.concat(UI_HOST_SURFACE_SELECTORS);

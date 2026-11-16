@@ -2280,12 +2280,33 @@ test("disabling dialogs keeps community surfaces selectable in child config", ()
   assert.ok(!child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-plugin"));
   assert.ok(!child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-theme"));
   assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-settings"));
-  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".modal-container"));
+  assert.ok(!child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".modal-container"));
 
   plugin.settings.translationRegionIds = ["dialogs"];
   plugin._applyRuntimeConfig(child);
   assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-plugin"));
   assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-theme"));
+});
+
+test("community-only child config keeps the modal container and community selectors", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["community"];
+  plugin.settings.uiTranslateEnabled = true;
+  const child = {};
+  plugin._applyRuntimeConfig(child);
+  const excludes = child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors;
+  assert.ok(!excludes.includes(".modal-container"));
+  assert.ok(!excludes.includes(".mod-community-plugin"));
+  assert.ok(!excludes.includes(".mod-community-theme"));
+  assert.ok(excludes.includes(".mod-settings"));
+
+  plugin.settings.translationRegionIds = ["reading"];
+  plugin._applyRuntimeConfig(child);
+  const excludesBothOff = child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors;
+  assert.ok(excludesBothOff.includes(".modal-container"));
+  assert.ok(excludesBothOff.includes(".mod-community-plugin"));
+  assert.ok(excludesBothOff.includes(".mod-settings"));
 });
 
 test("region preset changes persist, retranslate, and update dependent scopes", async () => {
