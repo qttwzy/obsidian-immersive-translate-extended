@@ -2250,6 +2250,44 @@ test("named region presets select only their owned UI and reading selectors", ()
   assert.ok(result.excludeSelectors.includes(".cm-editor"));
 });
 
+test("titlebar preset selectors reach the main translation rule", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["titlebar", "reading"];
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.settings.articleTranslateEnabled = true;
+
+  const result = plugin._buildSelectors();
+  assert.ok(result.selectors.includes(".titlebar"));
+  assert.ok(result.selectors.includes(".status-bar"));
+  assert.equal(result.selectors.includes(".workspace-ribbon"), false);
+
+  plugin.settings.translationRegionIds = ["reading"];
+  const excluded = plugin._buildSelectors();
+  assert.equal(excluded.selectors.includes(".titlebar"), false);
+  assert.equal(excluded.selectors.includes(".status-bar"), false);
+  assert.ok(excluded.excludeSelectors.includes(".titlebar"));
+  assert.ok(excluded.excludeSelectors.includes(".status-bar"));
+});
+
+test("disabling dialogs keeps community surfaces selectable in child config", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["community", "reading"];
+  plugin.settings.uiTranslateEnabled = true;
+  const child = {};
+  plugin._applyRuntimeConfig(child);
+  assert.ok(!child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-plugin"));
+  assert.ok(!child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-theme"));
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-settings"));
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".modal-container"));
+
+  plugin.settings.translationRegionIds = ["dialogs"];
+  plugin._applyRuntimeConfig(child);
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-plugin"));
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-theme"));
+});
+
 test("region preset changes persist, retranslate, and update dependent scopes", async () => {
   setupRuntime();
   const plugin = makePlugin();
@@ -5424,8 +5462,8 @@ test("main window title translation is disabled and an existing translated title
   assert.equal(document.title, document.originTitle);
   assert.equal(window.immersiveTranslateConfig.pageRule.isTranslateTitle, false);
   assert.equal(window.IMMERSIVE_TRANSLATE_CONFIG.generalRule.isTranslateTitle, false);
-  assert.equal(window.immersiveTranslateConfig.pageRule.selectors.includes(".titlebar"), false);
-  assert.ok(window.immersiveTranslateConfig.pageRule.excludeSelectors.includes(".titlebar"));
+  assert.ok(window.immersiveTranslateConfig.pageRule.selectors.includes(".titlebar"));
+  assert.equal(window.immersiveTranslateConfig.pageRule.excludeSelectors.includes(".titlebar"), false);
 });
 
 test("changed child regions use incremental requests and never start full translation as fallback", async () => {

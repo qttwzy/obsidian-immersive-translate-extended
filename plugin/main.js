@@ -4042,7 +4042,8 @@ var IMTExtendedPlugin = (function () {
     { id: "reading", label: "阅读视图正文", description: "Markdown 阅读视图；Markdown 编辑器始终排除", selectors: [ARTICLE_TRANSLATE_SELECTOR] },
   ];
   var DEFAULT_ENABLED_REGION_IDS = TRANSLATION_REGION_PRESETS.map(function (preset) { return preset.id; });
-  var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view", ".titlebar"].concat(
+  var TITLEBAR_PRESET_SELECTORS = [".titlebar", ".status-bar"];
+  var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view"].concat(
     UI_TRANSLATE_SELECTORS, UI_HOST_SURFACE_SELECTORS, PROTECTED_EDITOR_SELECTORS, [ARTICLE_TRANSLATE_SELECTOR]
   );
   var MINI_CONFIG_KEYS = ["interfaceLanguage", "targetLanguage", "translationService", "aiAssistantIds", "subtitleTranslateService", "inputTranslationService", "mouseHoverTranslationService", "protocolAgreeVersion", "isEnableGuideTips", "isEnableNotification", "forceAutoTranslate", "translationTheme", "translationMode", "translationThemePatterns", "selectTranslationFont", "enableWebViewInputTranslationDot"];
@@ -6959,6 +6960,9 @@ var IMTExtendedPlugin = (function () {
     }
     if (this.settings.uiTranslateEnabled) {
       sel.push.apply(sel, UI_TRANSLATE_SELECTORS.filter(function (value) { return enabledSelectorMap[value]; }));
+      for (var titlebarIndex = 0; titlebarIndex < TITLEBAR_PRESET_SELECTORS.length; titlebarIndex++) {
+        if (enabledRegions.indexOf("titlebar") >= 0) sel.push(TITLEBAR_PRESET_SELECTORS[titlebarIndex]);
+      }
       var uiOwned = Object.create(null);
       for (var u = 0; u < UI_TRANSLATE_SELECTORS.length; u++) uiOwned[UI_TRANSLATE_SELECTORS[u]] = true;
       for (var s = 0; s < UI_HOST_SURFACE_SELECTORS.length; s++) uiOwned[UI_HOST_SURFACE_SELECTORS[s]] = true;
@@ -6972,14 +6976,34 @@ var IMTExtendedPlugin = (function () {
       exc.push.apply(exc, UI_TRANSLATE_SELECTORS);
       exc.push.apply(exc, UI_HOST_SURFACE_SELECTORS);
     }
+    if (this.settings.uiTranslateEnabled) {
+      var titlebarEnabled = enabledRegions.indexOf("titlebar") >= 0;
+      var keptTitlebarExc = [];
+      for (var titlebarFilterIndex = 0; titlebarFilterIndex < exc.length; titlebarFilterIndex++) {
+        var titlebarCandidate = exc[titlebarFilterIndex];
+        if (TITLEBAR_PRESET_SELECTORS.indexOf(titlebarCandidate) >= 0 && titlebarEnabled) continue;
+        keptTitlebarExc.push(titlebarCandidate);
+      }
+      exc = keptTitlebarExc;
+    } else {
+      for (var titlebarDisableIndex = 0; titlebarDisableIndex < TITLEBAR_PRESET_SELECTORS.length; titlebarDisableIndex++) {
+        exc.push(TITLEBAR_PRESET_SELECTORS[titlebarDisableIndex]);
+      }
+    }
     for (var uiIndex = 0; uiIndex < UI_TRANSLATE_SELECTORS.length; uiIndex++) {
       if (!enabledSelectorMap[UI_TRANSLATE_SELECTORS[uiIndex]]) exc.push(UI_TRANSLATE_SELECTORS[uiIndex]);
     }
+    for (var titlebarExcludeIndex = 0; titlebarExcludeIndex < TITLEBAR_PRESET_SELECTORS.length; titlebarExcludeIndex++) {
+      if (!enabledSelectorMap[TITLEBAR_PRESET_SELECTORS[titlebarExcludeIndex]]) exc.push(TITLEBAR_PRESET_SELECTORS[titlebarExcludeIndex]);
+    }
+    var ownedMainSelectors = Object.create(null);
+    for (var ownedMainIndex = 0; ownedMainIndex < UI_TRANSLATE_SELECTORS.length; ownedMainIndex++) ownedMainSelectors[UI_TRANSLATE_SELECTORS[ownedMainIndex]] = true;
+    var titlebarOwned = Object.create(null);
+    for (var ownedTitlebarIndex = 0; ownedTitlebarIndex < TITLEBAR_PRESET_SELECTORS.length; ownedTitlebarIndex++) titlebarOwned[TITLEBAR_PRESET_SELECTORS[ownedTitlebarIndex]] = true;
     sel = sel.filter(function (value) {
-      if (value === ".titlebar" || UI_TRANSLATE_SELECTORS.indexOf(value) < 0) return true;
-      return enabledSelectorMap[value];
+      if (titlebarOwned[value]) return enabledRegions.indexOf("titlebar") >= 0;
+      return !ownedMainSelectors[value] || enabledSelectorMap[value];
     });
-    if (!enabledSelectorMap[".titlebar"]) exc.push(".titlebar");
     // Translating CodeMirror DOM writes generated text back into the Markdown
     // document. This exclusion is a safety invariant, not a user preference.
     exc.push.apply(exc, PROTECTED_EDITOR_SELECTORS);
@@ -6995,7 +7019,19 @@ var IMTExtendedPlugin = (function () {
     };
     var excludeSelectors = unique(exc); var excluded = Object.create(null);
     for (var e = 0; e < excludeSelectors.length; e++) excluded[excludeSelectors[e]] = true;
-    return { selectors: unique(sel).filter(function (value) { return !excluded[value]; }), excludeSelectors: excludeSelectors };
+    var resultSelectors = unique(sel).filter(function (value) { return !excluded[value]; });
+    var presetOwned = Object.create(null);
+    for (var presetOwnedIndex = 0; presetOwnedIndex < TRANSLATION_REGION_PRESETS.length; presetOwnedIndex++) {
+      var ownedPreset = TRANSLATION_REGION_PRESETS[presetOwnedIndex];
+      for (var ownedPresetIndex = 0; ownedPresetIndex < ownedPreset.selectors.length; ownedPresetIndex++) presetOwned[ownedPreset.selectors[ownedPresetIndex]] = true;
+    }
+    for (var presetOwnedResultIndex = 0; presetOwnedResultIndex < resultSelectors.length; presetOwnedResultIndex++) {
+      if (!presetOwned[resultSelectors[presetOwnedResultIndex]]) continue;
+      if (!enabledSelectorMap[resultSelectors[presetOwnedResultIndex]] && excludeSelectors.indexOf(resultSelectors[presetOwnedResultIndex]) < 0) {
+        excludeSelectors.push(resultSelectors[presetOwnedResultIndex]);
+      }
+    }
+    return { selectors: resultSelectors, excludeSelectors: excludeSelectors };
   };
 
   IMTExtendedPluginClass.prototype._filterHostSurfaceExclusions = function (values) {
@@ -7894,16 +7930,21 @@ var IMTExtendedPlugin = (function () {
     var userscriptConfig = this._withHostScopeConfig(storedConfig);
     var sel = userscriptConfig.generalRule || {};
     var excludeSelectors = sel.excludeSelectors || [];
-    if (runtimeWindow !== window && (!this.settings.uiTranslateEnabled || this.settings.translationRegionIds.indexOf("dialogs") < 0)) {
-      excludeSelectors = excludeSelectors.concat(UI_HOST_SURFACE_SELECTORS);
-    }
-    if (runtimeWindow !== window && _isCommunityHostWindow(runtimeWindow) && this.settings.translationRegionIds.indexOf("community") < 0) {
-      excludeSelectors = excludeSelectors.concat([".mod-community-plugin", ".mod-community-theme"]);
+    var pluginInstance = this;
+    if (runtimeWindow !== window) {
+      if (this.settings.uiTranslateEnabled) {
+        if (this.settings.translationRegionIds.indexOf("dialogs") < 0) excludeSelectors = excludeSelectors.concat([".mod-settings", ".modal-container"]);
+        if (this.settings.translationRegionIds.indexOf("community") < 0) excludeSelectors = excludeSelectors.concat([".mod-community-plugin", ".mod-community-theme"]);
+      } else {
+        excludeSelectors = excludeSelectors.concat(UI_HOST_SURFACE_SELECTORS);
+      }
     }
     sel = Object.assign({}, sel, {
       isTranslateTitle: false,
-      selectors: (sel.selectors || []).filter(function (selector) { return selector !== ".titlebar" || runtimeWindow === window; }),
-      excludeSelectors: Array.from(new Set(excludeSelectors.concat([".titlebar"]))),
+      selectors: (sel.selectors || []).filter(function (selector) {
+        return selector !== ".titlebar" || (runtimeWindow === window && pluginInstance.settings.translationRegionIds.indexOf("titlebar") >= 0);
+      }),
+      excludeSelectors: Array.from(new Set(excludeSelectors.concat(runtimeWindow === window && pluginInstance.settings.translationRegionIds.indexOf("titlebar") >= 0 ? [] : [".titlebar"]))),
     });
     userscriptConfig = Object.assign({}, userscriptConfig, { generalRule: sel });
     return userscriptConfig;
