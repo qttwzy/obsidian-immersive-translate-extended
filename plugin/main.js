@@ -4022,8 +4022,7 @@ var IMTExtendedPlugin = (function () {
   var DOCUMENT_REQUEST_EVENT = "immersiveTranslateDocumentMessageThirdPartyTell";
   var DOCUMENT_RESPONSE_EVENT = "immersiveTranslateDocumentMessageTellThirdParty";
   var UI_TRANSLATE_SELECTORS = [
-    ".status-bar", ".workspace-ribbon", ".workspace-tab-header-container",
-    ".workspace-sidedock-vault-profile", ".nav-header", ".nav-files-container",
+    ".workspace-ribbon", ".workspace-tab-header-container", ".workspace-sidedock-vault-profile", ".nav-header", ".nav-files-container",
     ".search-results-container", ".backlink-pane", ".outgoing-link-pane", ".tag-container",
     ".bookmarks-container", ".menu",
     ".notice-container", ".suggestion-container", ".prompt", ".popover", ".tooltip",
@@ -4035,6 +4034,14 @@ var IMTExtendedPlugin = (function () {
   var UI_DIALOG_EXCLUSION_SELECTORS = [".modal", "[role=dialog]", '[role="dialog"]'];
   var PROTECTED_EDITOR_SELECTORS = [".markdown-source-view", ".cm-editor"];
   var ARTICLE_TRANSLATE_SELECTOR = ".markdown-reading-view *";
+  var TRANSLATION_REGION_PRESETS = [
+    { id: "sidebar", label: "侧边栏与文件导航", description: "功能侧栏、标签页、文件、搜索、反链、标签和书签", selectors: [".workspace-ribbon", ".workspace-tab-header-container", ".workspace-sidedock-vault-profile", ".nav-header", ".nav-files-container", ".search-results-container", ".backlink-pane", ".outgoing-link-pane", ".tag-container", ".bookmarks-container"] },
+    { id: "titlebar", label: "标题栏与状态栏", description: "窗口标题栏和底部状态栏", selectors: [".titlebar", ".status-bar"] },
+    { id: "dialogs", label: "设置与通用弹窗", description: "设置内容、菜单、通知、提示和对话框；关闭后独立设置窗口不翻译", selectors: [".menu", ".notice-container", ".suggestion-container", ".prompt", ".popover", ".tooltip", ".setting-item-name", ".setting-item-description", ".vertical-tab-nav-item", ".modal-title"] },
+    { id: "community", label: "社区插件与主题浏览", description: "社区插件、主题列表及详情", selectors: [".community-item", ".community-item-name", ".community-item-desc", ".community-modal-info"] },
+    { id: "reading", label: "阅读视图正文", description: "Markdown 阅读视图；Markdown 编辑器始终排除", selectors: [ARTICLE_TRANSLATE_SELECTOR] },
+  ];
+  var DEFAULT_ENABLED_REGION_IDS = TRANSLATION_REGION_PRESETS.map(function (preset) { return preset.id; });
   var LEGACY_HOST_SELECTORS = [".workspace", ".markdown-reading-view", ".titlebar"].concat(
     UI_TRANSLATE_SELECTORS, UI_HOST_SURFACE_SELECTORS, PROTECTED_EDITOR_SELECTORS, [ARTICLE_TRANSLATE_SELECTOR]
   );
@@ -4067,6 +4074,13 @@ var IMTExtendedPlugin = (function () {
     return normalized.indexOf(".modal") >= 0 || normalized.indexOf("[role=dialog]") >= 0 || normalized.indexOf('[role="dialog"]') >= 0;
   }
 
+  function _isCommunityHostWindow(runtimeWindow) {
+    try {
+      var runtimeDocument = runtimeWindow && runtimeWindow.document;
+      return !!(runtimeDocument && runtimeDocument.querySelector && runtimeDocument.querySelector(".mod-community-plugin, .mod-community-theme"));
+    } catch (e) { return false; }
+  }
+
   var DEFAULT_SETTINGS = {
     uiTranslateEnabled: true,
     articleTranslateEnabled: true,
@@ -4074,6 +4088,7 @@ var IMTExtendedPlugin = (function () {
     disableStandaloneImt: false,
     shownConflictWarning: false,
     conflictChoiceVersion: 1,
+    translationRegionIds: DEFAULT_ENABLED_REGION_IDS.slice(),
     imtPagerule: {
       selectors: [],
       excludeSelectors: PROTECTED_EDITOR_SELECTORS.slice(),
@@ -4512,6 +4527,30 @@ var IMTExtendedPlugin = (function () {
       stored.conflictChoiceVersion = 1;
     }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+    var validRegionIds = Object.create(null);
+    for (var regionIndex = 0; regionIndex < TRANSLATION_REGION_PRESETS.length; regionIndex++) validRegionIds[TRANSLATION_REGION_PRESETS[regionIndex].id] = true;
+    var hasStoredRegions = Array.isArray(stored.translationRegionIds);
+    var storedRegionIds = hasStoredRegions ? stored.translationRegionIds : DEFAULT_ENABLED_REGION_IDS;
+    this.settings.translationRegionIds = Array.from(new Set(storedRegionIds.filter(function (id) { return typeof id === "string" && validRegionIds[id]; })));
+    if (!hasStoredRegions) {
+      if (this.settings.uiTranslateEnabled) {
+        for (var uiRegionIndex = 0; uiRegionIndex < DEFAULT_ENABLED_REGION_IDS.length; uiRegionIndex++) {
+          if (DEFAULT_ENABLED_REGION_IDS[uiRegionIndex] !== "reading" && this.settings.translationRegionIds.indexOf(DEFAULT_ENABLED_REGION_IDS[uiRegionIndex]) < 0) this.settings.translationRegionIds.push(DEFAULT_ENABLED_REGION_IDS[uiRegionIndex]);
+        }
+      } else this.settings.translationRegionIds = this.settings.translationRegionIds.filter(function (id) { return id === "reading"; });
+      if (this.settings.articleTranslateEnabled && this.settings.translationRegionIds.indexOf("reading") < 0) this.settings.translationRegionIds.push("reading");
+      if (!this.settings.articleTranslateEnabled) this.settings.translationRegionIds = this.settings.translationRegionIds.filter(function (id) { return id !== "reading"; });
+    }
+    if (hasStoredRegions) {
+      if (stored.uiTranslateEnabled === false) this.settings.translationRegionIds = this.settings.translationRegionIds.filter(function (id) { return id === "reading"; });
+      if (stored.articleTranslateEnabled === false) this.settings.translationRegionIds = this.settings.translationRegionIds.filter(function (id) { return id !== "reading"; });
+      this.settings.articleTranslateEnabled = this.settings.translationRegionIds.indexOf("reading") >= 0;
+    }
+    this.settings.uiTranslateEnabled = this.settings.translationRegionIds.some(function (id) { return id !== "reading"; });
+    if (!hasStoredRegions || JSON.stringify(storedRegionIds) !== JSON.stringify(this.settings.translationRegionIds)) {
+      try { await this.saveSettings(); }
+      catch (e) { console.warn("[IMT-Extended] Translation region preference repair will be retried:", e); }
+    }
     if (migrated) {
       try { await this.saveSettings(); }
       catch (e) { console.warn("[IMT-Extended] Legacy runtime preference cleanup will be retried:", e); }
@@ -6911,8 +6950,15 @@ var IMTExtendedPlugin = (function () {
     };
     var sel = cleanCustom([].concat(this.settings.imtPagerule.selectors || [], rule.selectors || []), true);
     var exc = cleanCustom([].concat(this.settings.imtPagerule.excludeSelectors || [], rule.excludeSelectors || []), false);
+    var enabledRegions = Array.isArray(this.settings.translationRegionIds) ? this.settings.translationRegionIds : DEFAULT_ENABLED_REGION_IDS;
+    var enabledSelectorMap = Object.create(null);
+    for (var regionIndex = 0; regionIndex < TRANSLATION_REGION_PRESETS.length; regionIndex++) {
+      var preset = TRANSLATION_REGION_PRESETS[regionIndex];
+      if (enabledRegions.indexOf(preset.id) < 0) continue;
+      for (var presetIndex = 0; presetIndex < preset.selectors.length; presetIndex++) enabledSelectorMap[preset.selectors[presetIndex]] = true;
+    }
     if (this.settings.uiTranslateEnabled) {
-      sel.push.apply(sel, UI_TRANSLATE_SELECTORS);
+      sel.push.apply(sel, UI_TRANSLATE_SELECTORS.filter(function (value) { return enabledSelectorMap[value]; }));
       var uiOwned = Object.create(null);
       for (var u = 0; u < UI_TRANSLATE_SELECTORS.length; u++) uiOwned[UI_TRANSLATE_SELECTORS[u]] = true;
       for (var s = 0; s < UI_HOST_SURFACE_SELECTORS.length; s++) uiOwned[UI_HOST_SURFACE_SELECTORS[s]] = true;
@@ -6926,10 +6972,18 @@ var IMTExtendedPlugin = (function () {
       exc.push.apply(exc, UI_TRANSLATE_SELECTORS);
       exc.push.apply(exc, UI_HOST_SURFACE_SELECTORS);
     }
+    for (var uiIndex = 0; uiIndex < UI_TRANSLATE_SELECTORS.length; uiIndex++) {
+      if (!enabledSelectorMap[UI_TRANSLATE_SELECTORS[uiIndex]]) exc.push(UI_TRANSLATE_SELECTORS[uiIndex]);
+    }
+    sel = sel.filter(function (value) {
+      if (value === ".titlebar" || UI_TRANSLATE_SELECTORS.indexOf(value) < 0) return true;
+      return enabledSelectorMap[value];
+    });
+    if (!enabledSelectorMap[".titlebar"]) exc.push(".titlebar");
     // Translating CodeMirror DOM writes generated text back into the Markdown
     // document. This exclusion is a safety invariant, not a user preference.
     exc.push.apply(exc, PROTECTED_EDITOR_SELECTORS);
-    if (this.settings.articleTranslateEnabled) sel.push(ARTICLE_TRANSLATE_SELECTOR); else exc.push(".markdown-reading-view", ".markdown-source-view");
+    if (this.settings.articleTranslateEnabled && enabledRegions.indexOf("reading") >= 0) sel.push(ARTICLE_TRANSLATE_SELECTOR); else exc.push(".markdown-reading-view", ".markdown-source-view");
     var unique = function (values) {
       var result = []; var seen = Object.create(null);
       for (var i = 0; i < values.length; i++) {
@@ -7284,36 +7338,59 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._setTranslationScopeSetting = async function (key, value) {
     if (key !== "uiTranslateEnabled" && key !== "articleTranslateEnabled") return false;
-    var previous = this.settings[key]; this.settings[key] = !!value;
+    var next = this.settings.translationRegionIds.slice();
+    if (key === "articleTranslateEnabled") return this._setEnabledTranslationRegions(value ? next.concat("reading") : next.filter(function (id) { return id !== "reading"; }));
+    if (value) {
+      for (var i = 0; i < TRANSLATION_REGION_PRESETS.length; i++) if (TRANSLATION_REGION_PRESETS[i].id !== "reading") next.push(TRANSLATION_REGION_PRESETS[i].id);
+      return this._setEnabledTranslationRegions(next);
+    }
+    return this._setEnabledTranslationRegions(next.filter(function (id) { return id === "reading"; }));
+  };
+
+  IMTExtendedPluginClass.prototype._setEnabledTranslationRegions = async function (regionIds) {
+    var requested = Array.isArray(regionIds) ? regionIds : [];
+    var next = [];
+    for (var i = 0; i < TRANSLATION_REGION_PRESETS.length; i++) {
+      if (requested.indexOf(TRANSLATION_REGION_PRESETS[i].id) >= 0) next.push(TRANSLATION_REGION_PRESETS[i].id);
+    }
+    var previous = this.settings.translationRegionIds.slice();
+    var previousArticleEnabled = this.settings.articleTranslateEnabled;
+    var previousUiEnabled = this.settings.uiTranslateEnabled;
+    this.settings.translationRegionIds = next;
+    this.settings.articleTranslateEnabled = next.indexOf("reading") >= 0;
+    this.settings.uiTranslateEnabled = next.some(function (id) { return id !== "reading"; });
     try {
       var persisted = await this.saveSettings();
       if (persisted === false) throw new Error("saveSettings returned false");
     } catch (e) {
-      this.settings[key] = previous;
-      new obsidian.Notice("翻译范围保存失败，已保留原设置");
+      this.settings.translationRegionIds = previous;
+      this.settings.articleTranslateEnabled = previousArticleEnabled;
+      this.settings.uiTranslateEnabled = previousUiEnabled;
+      new obsidian.Notice("翻译区域保存失败，已保留原设置");
       return false;
     }
+    this._bumpTranslationIntentSequence();
     var previousConfigState = _readGMConfigState();
     var config = this._persistHostScopeConfig();
     if (!config) {
-      new obsidian.Notice("翻译范围已保存，但运行时配置无法读取；请重启 Obsidian 后重试");
+      new obsidian.Notice("翻译区域已保存，但运行时配置无法读取；请重启 Obsidian 后重试");
       return false;
     }
-    // Invalidate earlier translation work before scheduling this scope update so
-    // the new refresh captures a fresh intent generation.
-    if (key === "uiTranslateEnabled" && !this.settings.uiTranslateEnabled) {
-      this._bumpTranslationIntentSequence();
+    if (this._hostWindowRuntimeManager) {
+      var pluginInstance = this;
+      this._hostWindowRuntimeManager.forEachActive(function (runtimeWindow) {
+        if (pluginInstance.settings.uiTranslateEnabled && pluginInstance.settings.translationRegionIds.indexOf(_isCommunityHostWindow(runtimeWindow) ? "community" : "dialogs") >= 0) return;
+        pluginInstance._updateHostWindowTranslationPolicy(runtimeWindow, "");
+        if (isActiveTranslationState(pluginInstance._getActiveTranslationState(runtimeWindow)) && typeof runtimeWindow.immersiveTranslateSwitchTranslateState === "function") {
+          try { runtimeWindow.immersiveTranslateSwitchTranslateState("original"); } catch (e) {}
+        }
+      });
     }
-    this._refreshUserscriptRuntime(config || {}, true, previousConfigState.valid ? previousConfigState.value : null);
-    this._pushConfigToDashboard(config || undefined);
-    if (key === "uiTranslateEnabled") {
-      this._syncHostSurfacePokeObserver();
-    }
-    if (key === "articleTranslateEnabled") {
-      if (this.settings.articleTranslateEnabled) this._startTranslationViewBridge();
-      else this._stopTranslationViewBridge();
-    }
-    new obsidian.Notice("翻译范围已实时更新");
+    this._refreshUserscriptRuntime(config, true, previousConfigState.valid ? previousConfigState.value : null);
+    this._pushConfigToDashboard(config);
+    this._syncHostSurfacePokeObserver();
+    if (this.settings.articleTranslateEnabled) this._startTranslationViewBridge(); else this._stopTranslationViewBridge();
+    new obsidian.Notice("翻译区域已实时更新");
     return true;
   };
 
@@ -7554,6 +7631,7 @@ var IMTExtendedPlugin = (function () {
       this._patchGlobal(runtimeWindow, HOST_TRANSLATION_POLICY_KEY, policy);
     }
     var active = !this._isUnloaded && this.settings.uiTranslateEnabled && isActiveTranslationState(mode);
+    if (runtimeWindow !== window) active = active && this.settings.translationRegionIds.indexOf(_isCommunityHostWindow(runtimeWindow) ? "community" : "dialogs") >= 0;
     if (policy.active !== active || policy.mode !== mode || policy.sourceIntent !== this._translationIntentSequence) {
       policy.generation++;
       policy.active = active;
@@ -7625,10 +7703,11 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._translateHostWindowContent = function (runtimeWindow, mode, config, regions) {
     if (runtimeWindow.closed) return false;
+    var partial = Array.isArray(regions);
+    if (partial && (!this.settings.uiTranslateEnabled || (runtimeWindow !== window && this.settings.translationRegionIds.indexOf(_isCommunityHostWindow(runtimeWindow) ? "community" : "dialogs") < 0))) return false;
     var record = this._windowRuntimeRecord(runtimeWindow);
     var policy = this._updateHostWindowTranslationPolicy(runtimeWindow, mode);
     if (!policy.active) return false;
-    var partial = Array.isArray(regions);
     var changed = partial ? hostUiRegions.normalizeHostRegions(regions) : [];
     if (partial && (!changed.length || !this._isHostRegionBridgeReady(runtimeWindow))) return false;
     function queue() {
@@ -7814,10 +7893,17 @@ var IMTExtendedPlugin = (function () {
   IMTExtendedPluginClass.prototype._withRuntimeWindowConfig = function (storedConfig, runtimeWindow) {
     var userscriptConfig = this._withHostScopeConfig(storedConfig);
     var sel = userscriptConfig.generalRule || {};
+    var excludeSelectors = sel.excludeSelectors || [];
+    if (runtimeWindow !== window && (!this.settings.uiTranslateEnabled || this.settings.translationRegionIds.indexOf("dialogs") < 0)) {
+      excludeSelectors = excludeSelectors.concat(UI_HOST_SURFACE_SELECTORS);
+    }
+    if (runtimeWindow !== window && _isCommunityHostWindow(runtimeWindow) && this.settings.translationRegionIds.indexOf("community") < 0) {
+      excludeSelectors = excludeSelectors.concat([".mod-community-plugin", ".mod-community-theme"]);
+    }
     sel = Object.assign({}, sel, {
       isTranslateTitle: false,
-      selectors: (sel.selectors || []).filter(function (selector) { return selector !== ".titlebar"; }),
-      excludeSelectors: Array.from(new Set((sel.excludeSelectors || []).concat([".titlebar"]))),
+      selectors: (sel.selectors || []).filter(function (selector) { return selector !== ".titlebar" || runtimeWindow === window; }),
+      excludeSelectors: Array.from(new Set(excludeSelectors.concat([".titlebar"]))),
     });
     userscriptConfig = Object.assign({}, userscriptConfig, { generalRule: sel });
     return userscriptConfig;
@@ -7893,6 +7979,8 @@ var IMTExtendedPlugin = (function () {
 
   IMTExtendedPluginClass.prototype._activateHostWindowRuntime = function (runtimeWindow) {
     if (this._isUnloaded || !this.settings.uiTranslateEnabled || !runtimeWindow) return false;
+    var communityWindow = _isCommunityHostWindow(runtimeWindow);
+    if (this.settings.translationRegionIds.indexOf(communityWindow ? "community" : "dialogs") < 0) return false;
     var runtimeDocument;
     try { runtimeDocument = runtimeWindow.document; } catch (e) { return false; }
     if (!runtimeDocument || !runtimeDocument.body || !runtimeDocument.head) return false;
@@ -8217,8 +8305,24 @@ var IMTExtendedPlugin = (function () {
       });
     }
     containerEl.createEl("h3", { text: "翻译范围" });
-    new obsidian.Setting(containerEl).setName("界面翻译范围").setDesc("翻译菜单、侧栏、设置和通知；关闭后立即清理这些区域的译文").addToggle(function (t) { t.setValue(self.plugin.settings.uiTranslateEnabled).onChange(function (v) { self.plugin._setTranslationScopeSetting("uiTranslateEnabled", v); }); });
-    new obsidian.Setting(containerEl).setName("正文翻译范围").setDesc("翻译阅读视图正文；Markdown 编辑器始终受到保护，切换会实时生效").addToggle(function (t) { t.setValue(self.plugin.settings.articleTranslateEnabled).onChange(function (v) { self.plugin._setTranslationScopeSetting("articleTranslateEnabled", v); }); });
+    new obsidian.Setting(containerEl).setName("翻译区域预设").setDesc("只翻译勾选的命名区域；Markdown 编辑器始终排除。范围越宽，越容易翻到你不想修改的界面内容").addButton(function (button) {
+      button.setButtonText("全选").onClick(function () { self.plugin._setEnabledTranslationRegions(DEFAULT_ENABLED_REGION_IDS); });
+    }).addButton(function (button) {
+      button.setButtonText("恢复默认").onClick(function () { self.plugin._setEnabledTranslationRegions(DEFAULT_ENABLED_REGION_IDS); });
+    });
+    for (var presetIndex = 0; presetIndex < TRANSLATION_REGION_PRESETS.length; presetIndex++) {
+      (function (preset) {
+        new obsidian.Setting(containerEl).setName(preset.label).setDesc(preset.description).addToggle(function (toggle) {
+          toggle.setValue(self.plugin.settings.translationRegionIds.indexOf(preset.id) >= 0).onChange(function (enabled) {
+            var next = self.plugin.settings.translationRegionIds.filter(function (id) { return id !== preset.id; });
+            if (enabled) next.push(preset.id);
+            Promise.resolve(self.plugin._setEnabledTranslationRegions(next)).then(function (applied) {
+              if (applied === false) self.display();
+            });
+          });
+        });
+      })(TRANSLATION_REGION_PRESETS[presetIndex]);
+    }
     containerEl.createEl("h3", { text: "账户与高级设置" });
     _renderAccountStatus(containerEl, this.plugin);
     new obsidian.Setting(containerEl).setName("沉浸式翻译 Dashboard").setDesc("登录、账户管理，以及译文样式、字体、鼠标悬停等完整高级设置").addButton(function (b) { b.setButtonText("打开 Dashboard").onClick(function () { self.plugin._openDashboardWindow("https://dash.immersivetranslate.com/#general"); }); }).addButton(function (b) { b.setButtonText("从已打开的 Dashboard 同步").onClick(function () { self.plugin._syncDashboardConfig(); }); });

@@ -96,8 +96,12 @@ test("settings expose account, Dashboard, and safe recovery controls at one leve
   const text = collectText(settingTab.containerEl);
 
   assert.doesNotMatch(text, /翻译引擎|完整版|精简版/);
-  assert.match(text, /界面翻译范围/);
-  assert.match(text, /正文翻译范围/);
+  assert.match(text, /翻译区域预设/);
+  assert.match(text, /侧边栏与文件导航/);
+  assert.match(text, /标题栏与状态栏/);
+  assert.match(text, /设置与通用弹窗/);
+  assert.match(text, /社区插件与主题浏览/);
+  assert.match(text, /阅读视图正文/);
   assert.match(text, /reader@example\.com/);
   assert.match(text, /Pro 会员/);
   assert.match(text, /打开 Dashboard/);
@@ -2219,6 +2223,140 @@ test("host selector matrix keeps Obsidian chrome and reading content independent
   assert.equal(uiOnly.excludeSelectors.includes(".modal"), false);
   assert.equal(uiOnly.excludeSelectors.includes("[role=dialog]"), false);
   assert.ok(uiOnly.excludeSelectors.includes(".custom-exclusion"));
+});
+
+test("named region presets select only their owned UI and reading selectors", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["sidebar", "reading"];
+  plugin.settings.uiTranslateEnabled = true;
+  plugin.settings.articleTranslateEnabled = true;
+  plugin.settings.imtPagerule = { selectors: [".workspace-ribbon", ".custom-surface"], excludeSelectors: [] };
+
+  const result = plugin._buildSelectors({ selectors: [".tooltip", ".runtime-custom"] });
+
+  assert.ok(result.selectors.includes(".workspace-ribbon"));
+  assert.ok(result.selectors.includes(".custom-surface"));
+  assert.ok(result.selectors.includes(".runtime-custom"));
+  assert.ok(result.selectors.includes(".markdown-reading-view *"));
+  assert.equal(result.selectors.includes(".titlebar"), false);
+  assert.equal(result.selectors.includes(".tooltip"), false);
+  assert.equal(result.selectors.includes(".setting-item-name"), false);
+  assert.equal(result.selectors.includes(".community-item"), false);
+  assert.ok(result.excludeSelectors.includes(".titlebar"));
+  assert.ok(result.excludeSelectors.includes(".tooltip"));
+  assert.ok(result.excludeSelectors.includes(".setting-item-name"));
+  assert.ok(result.excludeSelectors.includes(".community-item"));
+  assert.ok(result.excludeSelectors.includes(".cm-editor"));
+});
+
+test("region preset changes persist, retranslate, and update dependent scopes", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  const saved = [];
+  let refreshed = false;
+  let readingStarted = false;
+  plugin.saveSettings = async () => { saved.push(plugin.settings.translationRegionIds.slice()); return true; };
+  plugin._refreshUserscriptRuntime = (config, retranslate) => { refreshed = retranslate; return true; };
+  plugin._pushConfigToDashboard = () => {};
+  plugin._syncHostSurfacePokeObserver = () => {};
+  plugin._startTranslationViewBridge = () => { readingStarted = true; };
+
+  assert.equal(await plugin._setEnabledTranslationRegions(["dialogs", "dialogs", "unknown", "reading"]), true);
+  assert.deepEqual(saved, [["dialogs", "reading"]]);
+  assert.equal(plugin.settings.uiTranslateEnabled, true);
+  assert.equal(plugin.settings.articleTranslateEnabled, true);
+  assert.equal(refreshed, true);
+  assert.equal(readingStarted, true);
+  assert.ok(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")).generalRule.selectors.includes(".setting-item-name"));
+
+  assert.equal(await plugin._setEnabledTranslationRegions(["reading"]), true);
+  assert.equal(plugin.settings.uiTranslateEnabled, false);
+  assert.equal(plugin.settings.articleTranslateEnabled, true);
+  assert.ok(JSON.parse(localStorage.getItem("imt-gm-fullLocalUserConfig")).generalRule.excludeSelectors.includes(".setting-item-name"));
+
+  plugin.saveSettings = async () => false;
+  assert.equal(await plugin._setEnabledTranslationRegions(["sidebar"]), false);
+  assert.deepEqual(plugin.settings.translationRegionIds, ["reading"]);
+  assert.equal(plugin.settings.uiTranslateEnabled, false);
+  assert.equal(plugin.settings.articleTranslateEnabled, true);
+});
+
+test("legacy scope settings migrate to presets and invalid stored regions are repaired", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadData = async () => ({ uiTranslateEnabled: false, articleTranslateEnabled: true, conflictChoiceVersion: 1 });
+  plugin.saveSettings = async () => true;
+  await plugin.loadSettings();
+  assert.deepEqual(plugin.settings.translationRegionIds, ["reading"]);
+
+  plugin.loadData = async () => ({ translationRegionIds: ["dialogs", "dialogs", "unknown"], uiTranslateEnabled: true, articleTranslateEnabled: false, conflictChoiceVersion: 1 });
+  await plugin.loadSettings();
+  assert.deepEqual(plugin.settings.translationRegionIds, ["dialogs"]);
+  assert.equal(plugin.settings.articleTranslateEnabled, false);
+  assert.equal(plugin.settings.uiTranslateEnabled, true);
+});
+
+test("disabling dialogs blocks host activation and regional translation", () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["sidebar", "reading"];
+  plugin.settings.uiTranslateEnabled = true;
+  const child = { document: { body: {}, head: {} } };
+
+  assert.equal(plugin._activateHostWindowRuntime(child), false);
+  plugin._getActiveTranslationState = () => "dual";
+  plugin._isHostRegionBridgeReady = () => true;
+  assert.equal(plugin._translateHostWindowContent(child, "dual", {}, ["settings-content"]), false);
+  plugin._applyRuntimeConfig(child);
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-settings"));
+});
+
+test("community host windows remain independently selectable from dialogs", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.settings.translationRegionIds = ["community"];
+  plugin.settings.uiTranslateEnabled = true;
+  const child = { document: { body: {}, head: {}, querySelector: selector => selector.includes("mod-community") ? {} : null } };
+  plugin._getActiveTranslationState = () => "dual";
+  plugin._isEngineLoaded = () => true;
+  plugin._installGMPolyfill = () => {};
+  plugin._installBrowserAPIPolyfill = () => {};
+  plugin._installGMFetchPolyfill = () => {};
+  plugin._watchHostWindowContent = () => {};
+  plugin._pokeHostSurfaceTranslation = () => {};
+  assert.equal(plugin._activateHostWindowRuntime(child), true);
+
+  plugin.settings.translationRegionIds = ["dialogs"];
+  assert.equal(plugin._updateHostWindowTranslationPolicy(child, "dual").active, false);
+  assert.equal(plugin._translateHostWindowContent(child, "dual", {}, ["dialogs"]), false);
+  plugin._applyRuntimeConfig(child);
+  assert.ok(child.IMMERSIVE_TRANSLATE_CONFIG.generalRule.excludeSelectors.includes(".mod-community-plugin"));
+});
+
+test("settings toggles and reset buttons drive named presets", async () => {
+  setupRuntime();
+  const plugin = makePlugin();
+  plugin.loadSettings = async () => {};
+  plugin._interceptNavigation = () => {};
+  plugin._detectAndHandleConflicts = () => {};
+  plugin._activateIMT = async () => false;
+  plugin._setEnabledTranslationRegions = async ids => { plugin.settings.translationRegionIds = ids; return true; };
+  await plugin.onload();
+  const tab = addedSettingTabs[0];
+  tab.display();
+  const sidebarName = findElement(tab.containerEl, element => element.textContent === "侧边栏与文件导航");
+  const sidebarSetting = sidebarName.parentNode;
+  const sidebarToggle = findElement(sidebarSetting, element => element.type === "checkbox");
+  sidebarToggle.checked = false;
+  sidebarToggle.dispatchEvent({ type: "change" });
+  await tick();
+  assert.deepEqual(plugin.settings.translationRegionIds, ["titlebar", "dialogs", "community", "reading"]);
+
+  findElement(tab.containerEl, element => element.tagName === "BUTTON" && element.textContent === "恢复默认").dispatchEvent({ type: "click" });
+  await tick();
+  assert.deepEqual(plugin.settings.translationRegionIds, ["sidebar", "titlebar", "dialogs", "community", "reading"]);
+  plugin.onunload();
 });
 
 test("host surface poke follows the floating-ball translation state", () => {
